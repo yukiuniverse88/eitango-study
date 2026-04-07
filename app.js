@@ -4,787 +4,449 @@ const state = {
   currentCategory: null,
   currentMode: null,
   soundEnabled: true,
-  // Quiz state
-  quizWords: [],
-  quizIndex: 0,
-  quizScore: 0,
-  // Match state
-  matchCards: [],
-  matchFlipped: [],
-  matchMatched: 0,
-  matchTotal: 0,
-  matchAttempts: 0,
-  matchLocked: false,
-  // Type state
-  typeWords: [],
-  typeIndex: 0,
-  typeInput: "",
-  typeScore: 0,
-  shiftActive: false,
-  hintLevel: 0,
-  // Reorder state
-  reorderSentences: [],
-  reorderIndex: 0,
-  reorderScore: 0,
-  reorderPlaced: [],
-  reorderBank: [],
-  // Choose Sentence state
-  csSentences: [],
-  csIndex: 0,
-  csScore: 0,
-  // Fill Blank state
-  fbSentences: [],
-  fbIndex: 0,
-  fbScore: 0,
-  // Progress
+  quizWords: [], quizIndex: 0, quizScore: 0,
+  matchCards: [], matchFlipped: [], matchMatched: 0, matchTotal: 0, matchAttempts: 0, matchLocked: false,
+  typeWords: [], typeIndex: 0, typeInput: "", typeScore: 0, shiftActive: false, hintLevel: 0,
+  reorderSentences: [], reorderIndex: 0, reorderScore: 0, reorderPlaced: [], reorderBank: [],
+  csSentences: [], csIndex: 0, csScore: 0,
+  fbSentences: [], fbIndex: 0, fbScore: 0,
   progress: JSON.parse(localStorage.getItem("eng5-progress") || "{}"),
 };
 
-// ===== SOUND =====
-const AudioCtx = window.AudioContext || window.webkitAudioContext;
-let audioCtx;
-let audioUnlocked = false;
+// ===== SOUND (WAV生成 + HTMLAudio方式 - 全デバイス対応) =====
+function writeStr(v, o, s) { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); }
 
-function getAudioCtx() {
-  if (!audioCtx) audioCtx = new AudioCtx();
-  // Silkブラウザ等でsuspended状態なら resume
-  if (audioCtx.state === "suspended") {
-    audioCtx.resume();
-  }
-  return audioCtx;
+function genWav(sr, samples) {
+  const n = samples.length, buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf);
+  writeStr(v, 0, "RIFF"); v.setUint32(4, 36 + n * 2, true); writeStr(v, 8, "WAVE");
+  writeStr(v, 12, "fmt "); v.setUint32(16, 16, true); v.setUint16(20, 1, true);
+  v.setUint16(22, 1, true); v.setUint32(24, sr, true); v.setUint32(28, sr * 2, true);
+  v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  writeStr(v, 36, "data"); v.setUint32(40, n * 2, true);
+  for (let i = 0; i < n; i++) v.setInt16(44 + i * 2, Math.max(-1, Math.min(1, samples[i])) * 0x7FFF, true);
+  return URL.createObjectURL(new Blob([buf], { type: "audio/wav" }));
 }
 
-// Fireタブレット(Silk)対策: 最初のタッチでAudioContextをアンロック
-function unlockAudio() {
-  if (audioUnlocked) return;
-  try {
-    const ctx = getAudioCtx();
-    // 無音を一瞬再生してアンロック
-    const buf = ctx.createBuffer(1, 1, 22050);
-    const src = ctx.createBufferSource();
-    src.buffer = buf;
-    src.connect(ctx.destination);
-    src.start(0);
-    audioUnlocked = true;
-  } catch (e) {}
-  // SpeechSynthesisもアンロック（空発話）
-  if ("speechSynthesis" in window) {
-    const u = new SpeechSynthesisUtterance("");
-    u.volume = 0;
-    speechSynthesis.speak(u);
+function tone(freq, dur, vol, saw) {
+  const sr = 22050, len = Math.floor(sr * dur), s = new Float32Array(len);
+  for (let i = 0; i < len; i++) {
+    const t = i / sr;
+    const w = saw ? 2 * (t * freq - Math.floor(0.5 + t * freq)) : Math.sin(2 * Math.PI * freq * t);
+    s[i] = w * vol * Math.max(0, 1 - t / dur);
   }
+  return s;
 }
 
-// 複数イベントでアンロック（タッチ・クリック両方対応）
-["touchstart", "touchend", "click"].forEach(evt => {
-  document.addEventListener(evt, unlockAudio, { once: false, passive: true });
-});
+function merge(sr, parts) {
+  let len = 0;
+  for (const p of parts) len = Math.max(len, Math.floor(sr * p.d) + p.s.length);
+  const out = new Float32Array(len);
+  for (const p of parts) { const off = Math.floor(sr * p.d); for (let i = 0; i < p.s.length; i++) out[off + i] += p.s[i]; }
+  return out;
+}
+
+const SR = 22050;
+const SND = {};
+SND.correct = genWav(SR, merge(SR, [{ d: 0, s: tone(523, 0.25, 0.25) }, { d: 0.1, s: tone(659, 0.3, 0.25) }]));
+SND.wrong = genWav(SR, tone(200, 0.3, 0.18, true));
+SND.click = genWav(SR, tone(800, 0.06, 0.15));
+SND.flip = genWav(SR, tone(600, 0.08, 0.15));
+SND.place = genWav(SR, tone(500, 0.1, 0.15));
+SND.match = genWav(SR, merge(SR, [{ d: 0, s: tone(440, 0.15, 0.18) }, { d: 0.1, s: tone(660, 0.15, 0.18) }, { d: 0.2, s: tone(880, 0.25, 0.18) }]));
+SND.complete = genWav(SR, merge(SR, [{ d: 0, s: tone(523, 0.35, 0.18) }, { d: 0.12, s: tone(659, 0.35, 0.18) }, { d: 0.24, s: tone(784, 0.35, 0.18) }, { d: 0.36, s: tone(1047, 0.5, 0.18) }]));
 
 function playSound(type) {
-  if (!state.soundEnabled) return;
+  if (!state.soundEnabled || !SND[type]) return;
   try {
-    const ctx = getAudioCtx();
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.connect(gain); gain.connect(ctx.destination);
-    gain.gain.value = 0.15;
-    if (type === "correct") {
-      osc.frequency.value = 523; osc.type = "sine";
-      gain.gain.setValueAtTime(0.15, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.3);
-      osc.start(ctx.currentTime); osc.stop(ctx.currentTime + 0.3);
-      const o2 = ctx.createOscillator(), g2 = ctx.createGain();
-      o2.connect(g2); g2.connect(ctx.destination);
-      o2.frequency.value = 659; o2.type = "sine";
-      g2.gain.setValueAtTime(0.15, ctx.currentTime + 0.1);
-      g2.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.4);
-      o2.start(ctx.currentTime + 0.1); o2.stop(ctx.currentTime + 0.4);
-    } else if (type === "wrong") {
-      osc.frequency.value = 200; osc.type = "sawtooth";
-      gain.gain.setValueAtTime(0.1, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.3);
-      osc.start(ctx.currentTime); osc.stop(ctx.currentTime + 0.3);
-    } else if (type === "click") {
-      osc.frequency.value = 800; osc.type = "sine";
-      gain.gain.setValueAtTime(0.08, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.08);
-      osc.start(ctx.currentTime); osc.stop(ctx.currentTime + 0.08);
-    } else if (type === "flip") {
-      osc.frequency.value = 600; osc.type = "sine";
-      gain.gain.setValueAtTime(0.1, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.1);
-      osc.start(ctx.currentTime); osc.stop(ctx.currentTime + 0.1);
-    } else if (type === "match") {
-      osc.frequency.value = 440; osc.type = "sine";
-      gain.gain.setValueAtTime(0.12, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.15);
-      osc.start(ctx.currentTime); osc.stop(ctx.currentTime + 0.15);
-      const o2 = ctx.createOscillator(), g2 = ctx.createGain();
-      o2.connect(g2); g2.connect(ctx.destination); o2.frequency.value = 660;
-      g2.gain.setValueAtTime(0.12, ctx.currentTime + 0.1);
-      g2.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.3);
-      o2.start(ctx.currentTime + 0.1); o2.stop(ctx.currentTime + 0.3);
-      const o3 = ctx.createOscillator(), g3 = ctx.createGain();
-      o3.connect(g3); g3.connect(ctx.destination); o3.frequency.value = 880;
-      g3.gain.setValueAtTime(0.12, ctx.currentTime + 0.2);
-      g3.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.45);
-      o3.start(ctx.currentTime + 0.2); o3.stop(ctx.currentTime + 0.45);
-    } else if (type === "complete") {
-      [523, 659, 784, 1047].forEach((freq, i) => {
-        const o = ctx.createOscillator(), g = ctx.createGain();
-        o.connect(g); g.connect(ctx.destination); o.frequency.value = freq; o.type = "sine";
-        g.gain.setValueAtTime(0.12, ctx.currentTime + i * 0.12);
-        g.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + i * 0.12 + 0.4);
-        o.start(ctx.currentTime + i * 0.12); o.stop(ctx.currentTime + i * 0.12 + 0.4);
-      });
-    } else if (type === "place") {
-      osc.frequency.value = 500; osc.type = "sine";
-      gain.gain.setValueAtTime(0.1, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.12);
-      osc.start(ctx.currentTime); osc.stop(ctx.currentTime + 0.12);
-    }
+    const a = new Audio(SND[type]);
+    a.volume = 1.0;
+    const p = a.play();
+    if (p && p.catch) p.catch(() => {});
   } catch (e) {}
 }
 
 function speakWord(word) {
   if (!("speechSynthesis" in window)) return;
-  try {
-    speechSynthesis.cancel();
-    // Fireタブレット対策: 少し遅延させて発話
-    setTimeout(() => {
-      const u = new SpeechSynthesisUtterance(word);
-      u.lang = "en-US";
-      u.rate = 0.8;
-      u.volume = 1;
-      speechSynthesis.speak(u);
-    }, 50);
-  } catch (e) {}
+  try { speechSynthesis.cancel(); setTimeout(() => { const u = new SpeechSynthesisUtterance(word); u.lang = "en-US"; u.rate = 0.8; speechSynthesis.speak(u); }, 50); } catch (e) {}
 }
 
 function speakSentence(text) {
   if (!("speechSynthesis" in window)) return;
-  try {
-    speechSynthesis.cancel();
-    setTimeout(() => {
-      const u = new SpeechSynthesisUtterance(text);
-      u.lang = "en-US";
-      u.rate = 0.75;
-      u.volume = 1;
-      speechSynthesis.speak(u);
-    }, 50);
-  } catch (e) {}
+  try { speechSynthesis.cancel(); setTimeout(() => { const u = new SpeechSynthesisUtterance(text); u.lang = "en-US"; u.rate = 0.75; speechSynthesis.speak(u); }, 50); } catch (e) {}
 }
 
-// ===== NAVIGATION =====
-const ALL_MODE_SCREENS = ["choose-mode", "match-mode", "type-mode", "reorder-mode", "choose-sentence-mode", "fillblank-mode"];
+// タッチでAudio解禁
+let _aUnlock = false;
+function _unlock() {
+  if (_aUnlock) return; _aUnlock = true;
+  try { const a = new Audio(SND.click); a.volume = 0.01; const p = a.play(); if (p && p.catch) p.catch(() => {}); } catch (e) {}
+  if ("speechSynthesis" in window) { const u = new SpeechSynthesisUtterance(""); u.volume = 0; speechSynthesis.speak(u); }
+}
+["touchstart", "touchend", "click"].forEach(e => document.addEventListener(e, _unlock, { passive: true }));
 
-function showScreen(screenId) {
+// ===== NAVIGATION =====
+const ALL_MODES = ["choose-mode", "match-mode", "type-mode", "reorder-mode", "choose-sentence-mode", "fillblank-mode"];
+
+function showScreen(id) {
   document.querySelectorAll(".screen").forEach(s => s.classList.remove("active"));
-  document.getElementById(screenId).classList.add("active");
-  state.currentScreen = screenId;
-  const backBtn = document.querySelector(".back-btn");
-  if (screenId === "home") {
-    backBtn.classList.remove("visible");
-    document.querySelector(".app-header h1").textContent = "English Words 5";
-  } else {
-    backBtn.classList.add("visible");
-  }
+  document.getElementById(id).classList.add("active");
+  state.currentScreen = id;
+  const bb = document.querySelector(".back-btn");
+  if (id === "home") { bb.classList.remove("visible"); document.querySelector(".app-header h1").textContent = "English Words 5"; }
+  else bb.classList.add("visible");
 }
 
 function goBack() {
   if (state.currentScreen === "mode-select") showScreen("home");
-  else if (ALL_MODE_SCREENS.includes(state.currentScreen)) showScreen("mode-select");
+  else if (ALL_MODES.includes(state.currentScreen)) showScreen("mode-select");
   else if (state.currentScreen === "result") showScreen("mode-select");
 }
 
 // ===== PROGRESS =====
-function saveProgress(category, mode, score, total) {
-  const key = `${category}_${mode}`;
-  const pct = total > 0 ? Math.round((score / total) * 100) : 0;
-  if (!state.progress[key] || pct > state.progress[key]) {
-    state.progress[key] = pct;
-    localStorage.setItem("eng5-progress", JSON.stringify(state.progress));
-  }
+function saveProgress(cat, mode, score, total) {
+  const k = `${cat}_${mode}`, pct = total > 0 ? Math.round((score / total) * 100) : 0;
+  if (!state.progress[k] || pct > state.progress[k]) { state.progress[k] = pct; localStorage.setItem("eng5-progress", JSON.stringify(state.progress)); }
 }
 
 function getCategoryStars(catKey) {
-  let totalPct = 0;
-  const modes = ["choose", "match", "type", "reorder", "choose-sentence", "fillblank"];
-  modes.forEach(m => {
-    const key = `${catKey}_${m}`;
-    if (state.progress[key] !== undefined) totalPct += state.progress[key];
-  });
-  const avg = totalPct / modes.length;
-  if (avg >= 90) return 3;
-  if (avg >= 60) return 2;
-  if (avg >= 30) return 1;
-  return 0;
+  let tot = 0;
+  const ms = ["choose", "match", "type", "reorder", "choose-sentence", "fillblank"];
+  ms.forEach(m => { const k = `${catKey}_${m}`; if (state.progress[k] !== undefined) tot += state.progress[k]; });
+  const avg = tot / ms.length;
+  return avg >= 90 ? 3 : avg >= 60 ? 2 : avg >= 30 ? 1 : 0;
 }
 
-function renderStars(count) { return "★".repeat(count) + "☆".repeat(3 - count); }
+function renderStars(n) { return "★".repeat(n) + "☆".repeat(3 - n); }
 
 // ===== HELPERS =====
-function shuffle(arr) {
-  const a = [...arr];
-  for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; }
-  return a;
+function shuffle(a) { const b = [...a]; for (let i = b.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [b[i], b[j]] = [b[j], b[i]]; } return b; }
+
+function showFeedback(ok) {
+  if (!ok) return;
+  const o = document.getElementById("feedback-overlay"), t = o.querySelector(".feedback-text");
+  t.textContent = "⭕"; t.className = "feedback-text correct";
+  o.classList.add("show"); setTimeout(() => o.classList.remove("show"), 600);
 }
 
-function showFeedback(isCorrect) {
-  if (!isCorrect) return;
-  const overlay = document.getElementById("feedback-overlay");
-  const text = overlay.querySelector(".feedback-text");
-  text.textContent = "⭕"; text.className = "feedback-text correct";
-  overlay.classList.add("show");
-  setTimeout(() => overlay.classList.remove("show"), 600);
-}
-
-function showWrongPopup(word, chosenText, onClose) {
-  const existing = document.querySelector(".popup-overlay");
-  if (existing) existing.remove();
-  const popup = document.createElement("div");
-  popup.className = "popup-overlay";
-  popup.innerHTML = `
-    <div class="popup-card">
-      <div class="popup-label">❌ ざんねん！</div>
-      <span class="popup-emoji">${word.emoji}</span>
-      <div class="popup-ja">${word.ja}</div>
-      ${chosenText ? `<div class="popup-wrong">${chosenText}</div>` : ""}
-      <div class="popup-correct-word">${word.en}</div>
-      <button class="popup-speak-btn" id="popup-speak">🔊</button>
-      <div class="popup-tip"><div class="popup-tip-label">💡 こうやって覚えよう！</div><div class="popup-tip-text">${word.tip || ""}</div></div>
-      <button class="popup-close-btn" id="popup-close">とじる</button>
-    </div>`;
-  document.body.appendChild(popup);
+function showWrongPopup(word, chosen, onClose) {
+  const ex = document.querySelector(".popup-overlay"); if (ex) ex.remove();
+  const p = document.createElement("div"); p.className = "popup-overlay";
+  p.innerHTML = `<div class="popup-card"><div class="popup-label">❌ ざんねん！</div><span class="popup-emoji">${word.emoji}</span><div class="popup-ja">${word.ja}</div>${chosen ? `<div class="popup-wrong">${chosen}</div>` : ""}<div class="popup-correct-word">${word.en}</div><button class="popup-speak-btn" id="popup-speak">🔊</button><div class="popup-tip"><div class="popup-tip-label">💡 こうやって覚えよう！</div><div class="popup-tip-text">${word.tip || ""}</div></div><button class="popup-close-btn" id="popup-close">とじる</button></div>`;
+  document.body.appendChild(p);
   document.getElementById("popup-speak").addEventListener("click", () => speakWord(word.en));
-  document.getElementById("popup-close").addEventListener("click", () => { popup.remove(); if (onClose) onClose(); });
+  document.getElementById("popup-close").addEventListener("click", () => { p.remove(); if (onClose) onClose(); });
 }
 
-function showWrongPopupSentence(correctText, chosenText, onClose) {
-  const existing = document.querySelector(".popup-overlay");
-  if (existing) existing.remove();
-  const popup = document.createElement("div");
-  popup.className = "popup-overlay";
-  popup.innerHTML = `
-    <div class="popup-card">
-      <div class="popup-label">❌ ざんねん！</div>
-      ${chosenText ? `<div class="popup-wrong" style="font-size:14px">${chosenText}</div>` : ""}
-      <div class="popup-correct-word" style="font-size:24px;letter-spacing:0">${correctText}</div>
-      <button class="popup-speak-btn" id="popup-speak">🔊</button>
-      <div class="popup-tip"><div class="popup-tip-label">💡 正しい文はこれ！</div><div class="popup-tip-text">声に出して読んでみよう！<br>「${correctText}」</div></div>
-      <button class="popup-close-btn" id="popup-close">とじる</button>
-    </div>`;
-  document.body.appendChild(popup);
-  document.getElementById("popup-speak").addEventListener("click", () => speakSentence(correctText));
-  document.getElementById("popup-close").addEventListener("click", () => { popup.remove(); if (onClose) onClose(); });
+function showWrongPopupSentence(correct, chosen, onClose) {
+  const ex = document.querySelector(".popup-overlay"); if (ex) ex.remove();
+  const p = document.createElement("div"); p.className = "popup-overlay";
+  p.innerHTML = `<div class="popup-card"><div class="popup-label">❌ ざんねん！</div>${chosen ? `<div class="popup-wrong" style="font-size:14px">${chosen}</div>` : ""}<div class="popup-correct-word" style="font-size:24px;letter-spacing:0">${correct}</div><button class="popup-speak-btn" id="popup-speak">🔊</button><div class="popup-tip"><div class="popup-tip-label">💡 正しい文はこれ！</div><div class="popup-tip-text">声に出して読んでみよう！<br>「${correct}」</div></div><button class="popup-close-btn" id="popup-close">とじる</button></div>`;
+  document.body.appendChild(p);
+  document.getElementById("popup-speak").addEventListener("click", () => speakSentence(correct));
+  document.getElementById("popup-close").addEventListener("click", () => { p.remove(); if (onClose) onClose(); });
 }
 
 function showConfetti() {
-  const container = document.getElementById("confetti-container");
-  const colors = ["#FF6B35", "#4ECDC4", "#FFE66D", "#FF6B6B", "#7C83FD", "#A8E6CF"];
+  const c = document.getElementById("confetti-container"), cols = ["#FF6B35", "#4ECDC4", "#FFE66D", "#FF6B6B", "#7C83FD", "#A8E6CF"];
   for (let i = 0; i < 50; i++) {
-    const c = document.createElement("div"); c.className = "confetti";
-    c.style.left = Math.random() * 100 + "%";
-    c.style.backgroundColor = colors[Math.floor(Math.random() * colors.length)];
-    c.style.width = (Math.random() * 8 + 6) + "px"; c.style.height = (Math.random() * 8 + 6) + "px";
-    c.style.borderRadius = Math.random() > 0.5 ? "50%" : "2px";
-    c.style.animationDuration = (Math.random() * 1.5 + 1) + "s";
-    c.style.animationDelay = (Math.random() * 0.5) + "s";
-    container.appendChild(c);
+    const d = document.createElement("div"); d.className = "confetti";
+    d.style.left = Math.random() * 100 + "%"; d.style.backgroundColor = cols[Math.floor(Math.random() * cols.length)];
+    d.style.width = (Math.random() * 8 + 6) + "px"; d.style.height = (Math.random() * 8 + 6) + "px";
+    d.style.borderRadius = Math.random() > 0.5 ? "50%" : "2px";
+    d.style.animationDuration = (Math.random() * 1.5 + 1) + "s"; d.style.animationDelay = (Math.random() * 0.5) + "s";
+    c.appendChild(d);
   }
-  setTimeout(() => container.innerHTML = "", 3000);
+  setTimeout(() => c.innerHTML = "", 3000);
 }
 
-// ===== HOME SCREEN =====
+// ===== HOME =====
 function renderHome() {
-  const grid = document.getElementById("category-grid");
-  grid.innerHTML = "";
-  Object.entries(WORD_DATA).forEach(([key, cat]) => {
-    const stars = getCategoryStars(key);
-    const card = document.createElement("div");
-    card.className = "category-card";
-    card.innerHTML = `<span class="icon">${cat.icon}</span><div class="name">${cat.name}</div><div class="word-count">${cat.words.length}もじ</div><div class="stars">${renderStars(stars)}</div>`;
-    card.addEventListener("click", () => { playSound("click"); state.currentCategory = key; renderModeSelect(key); showScreen("mode-select"); });
-    grid.appendChild(card);
+  const g = document.getElementById("category-grid"); g.innerHTML = "";
+  Object.entries(WORD_DATA).forEach(([k, cat]) => {
+    const s = getCategoryStars(k), d = document.createElement("div"); d.className = "category-card";
+    d.innerHTML = `<span class="icon">${cat.icon}</span><div class="name">${cat.name}</div><div class="word-count">${cat.words.length}もじ</div><div class="stars">${renderStars(s)}</div>`;
+    d.addEventListener("click", () => { playSound("click"); state.currentCategory = k; renderModeSelect(k); showScreen("mode-select"); });
+    g.appendChild(d);
   });
 }
 
 // ===== MODE SELECT =====
-function renderModeSelect(catKey) {
-  const cat = WORD_DATA[catKey];
-  const hasSentences = SENTENCE_DATA && SENTENCE_DATA[catKey];
-  const area = document.getElementById("mode-select");
+function renderModeSelect(ck) {
+  const cat = WORD_DATA[ck], hasSent = SENTENCE_DATA && SENTENCE_DATA[ck], area = document.getElementById("mode-select");
   document.querySelector(".app-header h1").textContent = cat.name;
-
-  let sentenceSection = "";
-  if (hasSentences) {
-    sentenceSection = `
-      <div class="mode-section-title"><span class="section-icon">✏️</span> 文をつくる</div>
-      <div class="mode-cards">
-        <div class="mode-card choose" data-mode="reorder">
-          <div class="mode-icon">🔀</div>
-          <div class="mode-info"><h3>ならべかえ</h3><p>ことばを正しい順番にならべよう！</p></div>
-        </div>
-        <div class="mode-card match" data-mode="choose-sentence">
-          <div class="mode-icon">🖼️</div>
-          <div class="mode-info"><h3>絵から文をえらぶ</h3><p>絵に合う英語の文をえらぼう！</p></div>
-        </div>
-        <div class="mode-card type" data-mode="fillblank">
-          <div class="mode-icon">✍️</div>
-          <div class="mode-info"><h3>穴うめ</h3><p>（　）に入る単語をえらぼう！</p></div>
-        </div>
-      </div>`;
+  let sentHtml = "";
+  if (hasSent) {
+    sentHtml = `<div class="mode-section-title"><span class="section-icon">✏️</span> 文をつくる</div><div class="mode-cards">
+      <div class="mode-card choose" data-mode="reorder"><div class="mode-icon">🔀</div><div class="mode-info"><h3>ならべかえ</h3><p>ことばを正しい順番にならべよう！</p></div></div>
+      <div class="mode-card match" data-mode="choose-sentence"><div class="mode-icon">🖼️</div><div class="mode-info"><h3>絵から文をえらぶ</h3><p>絵に合う英語の文をえらぼう！</p></div></div>
+      <div class="mode-card type" data-mode="fillblank"><div class="mode-icon">✍️</div><div class="mode-info"><h3>穴うめ</h3><p>（　）に入る単語をえらぼう！</p></div></div></div>`;
   }
-
-  area.innerHTML = `
-    <div class="mode-header"><span class="cat-icon">${cat.icon}</span><div class="cat-name">${cat.name}</div></div>
-    <div class="mode-section-title"><span class="section-icon">🔤</span> 単語をおぼえる</div>
-    <div class="mode-cards">
-      <div class="mode-card choose" data-mode="choose">
-        <div class="mode-icon">🎯</div>
-        <div class="mode-info"><h3>えらぶモード</h3><p>4つの中から正しい英単語をえらぼう！</p></div>
-      </div>
-      <div class="mode-card match" data-mode="match">
-        <div class="mode-icon">🃏</div>
-        <div class="mode-info"><h3>マッチングモード</h3><p>英語と日本語のペアをさがそう！</p></div>
-      </div>
-      <div class="mode-card type" data-mode="type">
-        <div class="mode-icon">⌨️</div>
-        <div class="mode-info"><h3>タイピングモード</h3><p>英単語をキーボードで打ってみよう！</p></div>
-      </div>
-    </div>
-    ${sentenceSection}`;
-
-  area.querySelectorAll(".mode-card").forEach(card => {
-    card.addEventListener("click", () => {
-      playSound("click");
-      const mode = card.dataset.mode;
-      state.currentMode = mode;
-      if (mode === "choose") startChooseMode(catKey);
-      else if (mode === "match") startMatchMode(catKey);
-      else if (mode === "type") startTypeMode(catKey);
-      else if (mode === "reorder") startReorderMode(catKey);
-      else if (mode === "choose-sentence") startChooseSentenceMode(catKey);
-      else if (mode === "fillblank") startFillBlankMode(catKey);
+  area.innerHTML = `<div class="mode-header"><span class="cat-icon">${cat.icon}</span><div class="cat-name">${cat.name}</div></div>
+    <div class="mode-section-title"><span class="section-icon">🔤</span> 単語をおぼえる</div><div class="mode-cards">
+    <div class="mode-card choose" data-mode="choose"><div class="mode-icon">🎯</div><div class="mode-info"><h3>えらぶモード</h3><p>4つの中から正しい英単語をえらぼう！</p></div></div>
+    <div class="mode-card match" data-mode="match"><div class="mode-icon">🃏</div><div class="mode-info"><h3>マッチングモード</h3><p>英語と日本語のペアをさがそう！</p></div></div>
+    <div class="mode-card type" data-mode="type"><div class="mode-icon">⌨️</div><div class="mode-info"><h3>タイピングモード</h3><p>英単語をキーボードで打ってみよう！</p></div></div></div>${sentHtml}`;
+  area.querySelectorAll(".mode-card").forEach(c => {
+    c.addEventListener("click", () => {
+      playSound("click"); const m = c.dataset.mode; state.currentMode = m;
+      if (m === "choose") startChooseMode(ck); else if (m === "match") startMatchMode(ck);
+      else if (m === "type") startTypeMode(ck); else if (m === "reorder") startReorderMode(ck);
+      else if (m === "choose-sentence") startChooseSentenceMode(ck); else if (m === "fillblank") startFillBlankMode(ck);
     });
   });
 }
 
-// ===== CHOOSE MODE (4択) =====
-function startChooseMode(catKey) {
-  const cat = WORD_DATA[catKey];
-  state.quizWords = shuffle(cat.words); state.quizIndex = 0; state.quizScore = 0;
-  document.querySelector(".app-header h1").textContent = `${cat.name} - えらぶ`;
-  showScreen("choose-mode"); renderQuizQuestion();
+// ===== CHOOSE MODE =====
+function startChooseMode(ck) {
+  state.quizWords = shuffle(WORD_DATA[ck].words); state.quizIndex = 0; state.quizScore = 0;
+  document.querySelector(".app-header h1").textContent = `${WORD_DATA[ck].name} - えらぶ`;
+  showScreen("choose-mode"); renderQuizQ();
 }
 
-function renderQuizQuestion() {
-  const area = document.getElementById("choose-mode");
-  const word = state.quizWords[state.quizIndex];
-  const total = state.quizWords.length;
-  const pct = (state.quizIndex / total) * 100;
-  const confusables = word.confusables ? shuffle(word.confusables).slice(0, 2) : [];
-  const allWords = Object.values(WORD_DATA).flatMap(c => c.words);
-  const realWrongs = shuffle(allWords.filter(w => w.en !== word.en)).slice(0, 3 - confusables.length);
-  const wrongChoices = [...confusables.map(c => ({ en: c })), ...realWrongs.map(w => ({ en: w.en }))].slice(0, 3);
-  const choices = shuffle([{ en: word.en }, ...wrongChoices]);
-
-  area.innerHTML = `<div class="quiz-area">
-    <div class="quiz-progress"><span>${state.quizIndex + 1} / ${total}</span><div class="quiz-progress-bar"><div class="quiz-progress-fill" style="width:${pct}%"></div></div><span>⭕ ${state.quizScore}</span></div>
-    <span class="quiz-emoji">${word.emoji}</span><div class="quiz-japanese">${word.ja}</div>
-    <button class="quiz-speaker-btn" id="speak-btn">🔊</button>
-    <div class="quiz-hint">えいごでなんて言う？</div>
-    <div class="quiz-choices">${choices.map(c => `<button class="quiz-choice" data-word="${c.en}">${c.en}</button>`).join("")}</div></div>`;
-  document.getElementById("speak-btn").addEventListener("click", () => speakWord(word.en));
-  area.querySelectorAll(".quiz-choice").forEach(btn => btn.addEventListener("click", () => handleQuizAnswer(btn, word)));
+function renderQuizQ() {
+  const a = document.getElementById("choose-mode"), w = state.quizWords[state.quizIndex], t = state.quizWords.length, pct = (state.quizIndex / t) * 100;
+  const conf = w.confusables ? shuffle(w.confusables).slice(0, 2) : [];
+  const allW = Object.values(WORD_DATA).flatMap(c => c.words);
+  const real = shuffle(allW.filter(x => x.en !== w.en)).slice(0, 3 - conf.length);
+  const wrongs = [...conf.map(c => ({ en: c })), ...real.map(x => ({ en: x.en }))].slice(0, 3);
+  const ch = shuffle([{ en: w.en }, ...wrongs]);
+  a.innerHTML = `<div class="quiz-area"><div class="quiz-progress"><span>${state.quizIndex + 1} / ${t}</span><div class="quiz-progress-bar"><div class="quiz-progress-fill" style="width:${pct}%"></div></div><span>⭕ ${state.quizScore}</span></div>
+    <span class="quiz-emoji">${w.emoji}</span><div class="quiz-japanese">${w.ja}</div><button class="quiz-speaker-btn" id="speak-btn">🔊</button>
+    <div class="quiz-hint">えいごでなんて言う？</div><div class="quiz-choices">${ch.map(c => `<button class="quiz-choice" data-word="${c.en}">${c.en}</button>`).join("")}</div></div>`;
+  document.getElementById("speak-btn").addEventListener("click", () => speakWord(w.en));
+  a.querySelectorAll(".quiz-choice").forEach(b => b.addEventListener("click", () => {
+    const chosen = b.dataset.word, ok = chosen === w.en;
+    document.querySelectorAll(".quiz-choice").forEach(x => { x.style.pointerEvents = "none"; if (x.dataset.word === w.en) x.classList.add("correct"); else if (x === b && !ok) x.classList.add("wrong"); });
+    if (ok) { state.quizScore++; playSound("correct"); speakWord(w.en); showFeedback(true); setTimeout(() => advQuiz(), 1200); }
+    else { playSound("wrong"); setTimeout(() => showWrongPopup(w, chosen, () => advQuiz()), 400); }
+  }));
 }
-
-function handleQuizAnswer(btn, word) {
-  const chosen = btn.dataset.word, isCorrect = chosen === word.en;
-  document.querySelectorAll(".quiz-choice").forEach(b => {
-    b.style.pointerEvents = "none";
-    if (b.dataset.word === word.en) b.classList.add("correct");
-    else if (b === btn && !isCorrect) b.classList.add("wrong");
-  });
-  if (isCorrect) { state.quizScore++; playSound("correct"); speakWord(word.en); showFeedback(true); setTimeout(() => advanceQuiz(), 1200); }
-  else { playSound("wrong"); setTimeout(() => showWrongPopup(word, chosen, () => advanceQuiz()), 400); }
-}
-
-function advanceQuiz() { state.quizIndex++; if (state.quizIndex < state.quizWords.length) renderQuizQuestion(); else showResult("choose"); }
+function advQuiz() { state.quizIndex++; if (state.quizIndex < state.quizWords.length) renderQuizQ(); else showResult("choose"); }
 
 // ===== MATCH MODE =====
-function startMatchMode(catKey) {
-  const cat = WORD_DATA[catKey];
-  const selected = shuffle(cat.words).slice(0, 6);
-  state.matchTotal = selected.length; state.matchMatched = 0; state.matchAttempts = 0; state.matchFlipped = []; state.matchLocked = false;
-  const cards = [];
-  selected.forEach((w, i) => {
-    cards.push({ id: `en-${i}`, pairId: i, type: "en", text: w.en, emoji: w.emoji, word: w });
-    cards.push({ id: `ja-${i}`, pairId: i, type: "ja", text: w.ja, emoji: w.emoji, word: w });
-  });
+function startMatchMode(ck) {
+  const sel = shuffle(WORD_DATA[ck].words).slice(0, 6);
+  state.matchTotal = sel.length; state.matchMatched = 0; state.matchAttempts = 0; state.matchFlipped = []; state.matchLocked = false;
+  const cards = []; sel.forEach((w, i) => { cards.push({ id: `en-${i}`, pId: i, type: "en", text: w.en, emoji: w.emoji, word: w }); cards.push({ id: `ja-${i}`, pId: i, type: "ja", text: w.ja, emoji: w.emoji, word: w }); });
   state.matchCards = shuffle(cards);
-  document.querySelector(".app-header h1").textContent = `${cat.name} - マッチング`;
+  document.querySelector(".app-header h1").textContent = `${WORD_DATA[ck].name} - マッチング`;
   showScreen("match-mode"); renderMatchGrid();
 }
 
 function renderMatchGrid() {
-  const area = document.getElementById("match-mode");
-  area.innerHTML = `<div class="match-area"><div class="match-stats"><span>ペア: ${state.matchMatched} / ${state.matchTotal}</span><span>トライ: ${state.matchAttempts}</span></div>
-    <div class="match-grid">${state.matchCards.map(c => `<div class="match-card" data-id="${c.id}" data-pair="${c.pairId}" data-type="${c.type}"><span class="card-back">❓</span><div class="card-front"><span class="card-emoji">${c.emoji}</span><span>${c.text}</span></div></div>`).join("")}</div></div>`;
-  area.querySelectorAll(".match-card").forEach(card => card.addEventListener("click", () => handleMatchClick(card)));
-}
-
-function handleMatchClick(el) {
-  if (state.matchLocked || el.classList.contains("flipped") || el.classList.contains("matched")) return;
-  playSound("flip"); el.classList.add("flipped", el.dataset.type === "en" ? "en-card" : "ja-card");
-  state.matchFlipped.push(el);
-  if (state.matchFlipped.length === 2) {
-    state.matchAttempts++; state.matchLocked = true;
-    const [a, b] = state.matchFlipped;
-    if (a.dataset.pair === b.dataset.pair && a.dataset.type !== b.dataset.type) {
-      setTimeout(() => {
-        a.classList.add("matched"); b.classList.add("matched"); state.matchMatched++; playSound("match");
-        const w = state.matchCards.find(c => c.id === a.dataset.id); if (w) speakWord(w.word.en);
-        document.querySelector(".match-stats").innerHTML = `<span>ペア: ${state.matchMatched} / ${state.matchTotal}</span><span>トライ: ${state.matchAttempts}</span>`;
-        state.matchFlipped = []; state.matchLocked = false;
-        if (state.matchMatched === state.matchTotal) setTimeout(() => showResult("match"), 600);
-      }, 400);
-    } else {
-      setTimeout(() => { a.classList.remove("flipped", "en-card", "ja-card"); b.classList.remove("flipped", "en-card", "ja-card"); state.matchFlipped = []; state.matchLocked = false; }, 800);
+  const a = document.getElementById("match-mode");
+  a.innerHTML = `<div class="match-area"><div class="match-stats"><span>ペア: ${state.matchMatched} / ${state.matchTotal}</span><span>トライ: ${state.matchAttempts}</span></div>
+    <div class="match-grid">${state.matchCards.map(c => `<div class="match-card" data-id="${c.id}" data-pair="${c.pId}" data-type="${c.type}"><span class="card-back">❓</span><div class="card-front"><span class="card-emoji">${c.emoji}</span><span>${c.text}</span></div></div>`).join("")}</div></div>`;
+  a.querySelectorAll(".match-card").forEach(c => c.addEventListener("click", () => {
+    if (state.matchLocked || c.classList.contains("flipped") || c.classList.contains("matched")) return;
+    playSound("flip"); c.classList.add("flipped", c.dataset.type === "en" ? "en-card" : "ja-card");
+    state.matchFlipped.push(c);
+    if (state.matchFlipped.length === 2) {
+      state.matchAttempts++; state.matchLocked = true;
+      const [x, y] = state.matchFlipped;
+      if (x.dataset.pair === y.dataset.pair && x.dataset.type !== y.dataset.type) {
+        setTimeout(() => { x.classList.add("matched"); y.classList.add("matched"); state.matchMatched++; playSound("match");
+          const w = state.matchCards.find(c => c.id === x.dataset.id); if (w) speakWord(w.word.en);
+          document.querySelector(".match-stats").innerHTML = `<span>ペア: ${state.matchMatched} / ${state.matchTotal}</span><span>トライ: ${state.matchAttempts}</span>`;
+          state.matchFlipped = []; state.matchLocked = false;
+          if (state.matchMatched === state.matchTotal) setTimeout(() => showResult("match"), 600);
+        }, 400);
+      } else { setTimeout(() => { x.classList.remove("flipped", "en-card", "ja-card"); y.classList.remove("flipped", "en-card", "ja-card"); state.matchFlipped = []; state.matchLocked = false; }, 800); }
     }
-  }
+  }));
 }
 
 // ===== TYPE MODE =====
-function startTypeMode(catKey) {
-  const cat = WORD_DATA[catKey];
-  state.typeWords = shuffle(cat.words); state.typeIndex = 0; state.typeScore = 0;
+function startTypeMode(ck) {
+  state.typeWords = shuffle(WORD_DATA[ck].words); state.typeIndex = 0; state.typeScore = 0;
   state.typeInput = ""; state.shiftActive = false; state.hintLevel = 0;
-  document.querySelector(".app-header h1").textContent = `${cat.name} - タイピング`;
-  showScreen("type-mode"); renderTypeQuestion();
+  document.querySelector(".app-header h1").textContent = `${WORD_DATA[ck].name} - タイピング`;
+  showScreen("type-mode"); renderTypeQ();
 }
 
-function getHintText(word, level) {
-  const en = word.en;
-  if (level === 1) return `${en[0]} ${"_ ".repeat(en.length - 1).trim()}　（${en.length}文字）`;
-  if (level === 2) { if (en.length <= 2) return en; return `${en[0]} ${"_ ".repeat(en.length - 2).trim()} ${en[en.length - 1]}　（${en.length}文字）`; }
-  if (level === 3) { let h = ""; for (let i = 0; i < en.length; i++) h += (i === 0 || i === en.length - 1 || i % 2 === 0) ? en[i] + " " : "_ "; return h.trim() + `　（${en.length}文字）`; }
+function getHint(w, lv) {
+  const e = w.en, l = e.length;
+  if (lv === 1) return `${e[0]} ${"_ ".repeat(l - 1).trim()}　（${l}文字）`;
+  if (lv === 2) return l <= 2 ? e : `${e[0]} ${"_ ".repeat(l - 2).trim()} ${e[l - 1]}　（${l}文字）`;
+  if (lv === 3) { let h = ""; for (let i = 0; i < l; i++) h += (i === 0 || i === l - 1 || i % 2 === 0) ? e[i] + " " : "_ "; return h.trim() + `　（${l}文字）`; }
   return "";
 }
 
-function renderTypeQuestion() {
-  const area = document.getElementById("type-mode");
-  const word = state.typeWords[state.typeIndex];
-  const total = state.typeWords.length;
-  const pct = (state.typeIndex / total) * 100;
+function renderTypeQ() {
+  const a = document.getElementById("type-mode"), w = state.typeWords[state.typeIndex], t = state.typeWords.length, pct = (state.typeIndex / t) * 100;
   state.typeInput = ""; state.hintLevel = 0;
-  area.innerHTML = `<div class="type-area">
-    <div class="quiz-progress"><span>${state.typeIndex + 1} / ${total}</span><div class="quiz-progress-bar"><div class="quiz-progress-fill" style="width:${pct}%"></div></div><span>⭕ ${state.typeScore}</span></div>
-    <span class="type-emoji">${word.emoji}</span><div class="type-japanese">${word.ja}</div>
-    <button class="quiz-speaker-btn" id="speak-btn-type">🔊</button>
+  a.innerHTML = `<div class="type-area"><div class="quiz-progress"><span>${state.typeIndex + 1} / ${t}</span><div class="quiz-progress-bar"><div class="quiz-progress-fill" style="width:${pct}%"></div></div><span>⭕ ${state.typeScore}</span></div>
+    <span class="type-emoji">${w.emoji}</span><div class="type-japanese">${w.ja}</div><button class="quiz-speaker-btn" id="speak-btn-type">🔊</button>
     <div class="type-input-display" id="type-display"><span class="type-cursor"></span></div>
-    <div class="type-hint-area" id="hint-area"><button class="type-hint-btn" id="hint-btn">ヒント① を見る</button></div></div>
-    <div class="keyboard" id="keyboard"></div>`;
-  document.getElementById("speak-btn-type").addEventListener("click", () => speakWord(word.en));
-  setupHintButton();
-  renderKeyboard(); updateTypeDisplay();
+    <div class="type-hint-area" id="hint-area"><button class="type-hint-btn" id="hint-btn">ヒント① を見る</button></div></div><div class="keyboard" id="keyboard"></div>`;
+  document.getElementById("speak-btn-type").addEventListener("click", () => speakWord(w.en));
+  setupHint(); renderKB(); updDisplay();
 }
 
-function setupHintButton() {
-  const btn = document.getElementById("hint-btn");
-  if (!btn) return;
-  btn.addEventListener("click", function hintClick() {
+function setupHint() {
+  const b = document.getElementById("hint-btn"); if (!b) return;
+  b.addEventListener("click", () => {
     state.hintLevel++;
-    const word = state.typeWords[state.typeIndex];
-    const hintArea = document.getElementById("hint-area");
-    const hintText = getHintText(word, state.hintLevel);
-    let nextHtml = "";
-    if (state.hintLevel < 3) {
-      const lbl = state.hintLevel + 1;
-      nextHtml = `<button class="type-hint-btn" id="hint-btn" style="margin-left:10px">ヒント${lbl === 2 ? "②" : "③"} を見る</button>`;
-    }
-    hintArea.innerHTML = `<span class="type-hint-text">${hintText}</span>${nextHtml}`;
-    setupHintButton();
+    const w = state.typeWords[state.typeIndex], ha = document.getElementById("hint-area"), ht = getHint(w, state.hintLevel);
+    let nx = ""; if (state.hintLevel < 3) { const l = state.hintLevel + 1; nx = `<button class="type-hint-btn" id="hint-btn" style="margin-left:10px">ヒント${l === 2 ? "②" : "③"} を見る</button>`; }
+    ha.innerHTML = `<span class="type-hint-text">${ht}</span>${nx}`; setupHint();
   });
 }
 
-function renderKeyboard() {
+function renderKB() {
   const kb = document.getElementById("keyboard");
   const rows = [["q","w","e","r","t","y","u","i","o","p"],["a","s","d","f","g","h","j","k","l"],["SHIFT","z","x","c","v","b","n","m","⌫"],["ENTER"]];
-  kb.innerHTML = rows.map(row => `<div class="kb-row">${row.map(key => {
-    if (key === "SHIFT") return `<div class="kb-key shift wide${state.shiftActive ? " active" : ""}" data-key="shift">⇧</div>`;
-    if (key === "⌫") return `<div class="kb-key backspace wide" data-key="backspace">⌫</div>`;
-    if (key === "ENTER") return `<div class="kb-key enter extra-wide" data-key="enter">けってい ✓</div>`;
-    return `<div class="kb-key" data-key="${key}">${state.shiftActive ? key.toUpperCase() : key}</div>`;
+  kb.innerHTML = rows.map(r => `<div class="kb-row">${r.map(k => {
+    if (k === "SHIFT") return `<div class="kb-key shift wide${state.shiftActive ? " active" : ""}" data-key="shift">⇧</div>`;
+    if (k === "⌫") return `<div class="kb-key backspace wide" data-key="backspace">⌫</div>`;
+    if (k === "ENTER") return `<div class="kb-key enter extra-wide" data-key="enter">けってい ✓</div>`;
+    return `<div class="kb-key" data-key="${k}">${state.shiftActive ? k.toUpperCase() : k}</div>`;
   }).join("")}</div>`).join("");
-  kb.querySelectorAll(".kb-key").forEach(k => k.addEventListener("click", () => handleKeyPress(k.dataset.key)));
+  kb.querySelectorAll(".kb-key").forEach(k => k.addEventListener("click", () => kbPress(k.dataset.key)));
 }
 
-function handleKeyPress(key) {
-  if (key === "shift") { state.shiftActive = !state.shiftActive; renderKeyboard(); playSound("click"); return; }
-  if (key === "backspace") { if (state.typeInput.length > 0) { state.typeInput = state.typeInput.slice(0, -1); playSound("click"); updateTypeDisplay(); } return; }
-  if (key === "enter") { checkTypeAnswer(); return; }
-  const char = state.shiftActive ? key.toUpperCase() : key;
-  state.typeInput += char;
-  if (state.shiftActive) { state.shiftActive = false; renderKeyboard(); }
-  playSound("click"); updateTypeDisplay();
+function kbPress(k) {
+  if (k === "shift") { state.shiftActive = !state.shiftActive; renderKB(); playSound("click"); return; }
+  if (k === "backspace") { if (state.typeInput.length > 0) { state.typeInput = state.typeInput.slice(0, -1); playSound("click"); updDisplay(); } return; }
+  if (k === "enter") { chkType(); return; }
+  state.typeInput += state.shiftActive ? k.toUpperCase() : k;
+  if (state.shiftActive) { state.shiftActive = false; renderKB(); }
+  playSound("click"); updDisplay();
 }
 
-function updateTypeDisplay() {
-  const display = document.getElementById("type-display"); if (!display) return;
-  const word = state.typeWords[state.typeIndex];
-  let html = "";
-  for (let i = 0; i < state.typeInput.length; i++) {
-    const ok = state.typeInput[i].toLowerCase() === (word.en[i] || "").toLowerCase();
-    html += `<span class="char ${ok ? "correct" : "wrong"}">${state.typeInput[i]}</span>`;
-  }
-  display.innerHTML = html + '<span class="type-cursor"></span>';
+function updDisplay() {
+  const d = document.getElementById("type-display"); if (!d) return;
+  const w = state.typeWords[state.typeIndex]; let h = "";
+  for (let i = 0; i < state.typeInput.length; i++) { const ok = state.typeInput[i].toLowerCase() === (w.en[i] || "").toLowerCase(); h += `<span class="char ${ok ? "correct" : "wrong"}">${state.typeInput[i]}</span>`; }
+  d.innerHTML = h + '<span class="type-cursor"></span>';
 }
 
-function checkTypeAnswer() {
-  const word = state.typeWords[state.typeIndex];
-  if (state.typeInput.toLowerCase() === word.en.toLowerCase()) {
-    state.typeScore++; playSound("correct"); speakWord(word.en); showFeedback(true); setTimeout(() => advanceType(), 1200);
-  } else {
-    playSound("wrong"); setTimeout(() => showWrongPopup(word, state.typeInput || "(なにもうってない)", () => advanceType()), 300);
-  }
+function chkType() {
+  const w = state.typeWords[state.typeIndex];
+  if (state.typeInput.toLowerCase() === w.en.toLowerCase()) { state.typeScore++; playSound("correct"); speakWord(w.en); showFeedback(true); setTimeout(() => advType(), 1200); }
+  else { playSound("wrong"); setTimeout(() => showWrongPopup(w, state.typeInput || "(なにもうってない)", () => advType()), 300); }
 }
-
-function advanceType() { state.typeIndex++; if (state.typeIndex < state.typeWords.length) renderTypeQuestion(); else showResult("type"); }
+function advType() { state.typeIndex++; if (state.typeIndex < state.typeWords.length) renderTypeQ(); else showResult("type"); }
 
 document.addEventListener("keydown", e => {
   if (state.currentScreen !== "type-mode" || document.querySelector(".popup-overlay")) return;
-  if (e.key === "Backspace") { e.preventDefault(); handleKeyPress("backspace"); }
-  else if (e.key === "Enter") { e.preventDefault(); handleKeyPress("enter"); }
-  else if (e.key === "Shift") { state.shiftActive = !state.shiftActive; renderKeyboard(); }
-  else if (/^[a-zA-Z]$/.test(e.key)) { state.typeInput += e.shiftKey ? e.key.toUpperCase() : e.key.toLowerCase(); playSound("click"); updateTypeDisplay(); }
+  if (e.key === "Backspace") { e.preventDefault(); kbPress("backspace"); }
+  else if (e.key === "Enter") { e.preventDefault(); kbPress("enter"); }
+  else if (e.key === "Shift") { state.shiftActive = !state.shiftActive; renderKB(); }
+  else if (/^[a-zA-Z]$/.test(e.key)) { state.typeInput += e.shiftKey ? e.key.toUpperCase() : e.key.toLowerCase(); playSound("click"); updDisplay(); }
 });
 
-// ===== REORDER MODE (並べ替え) =====
-function startReorderMode(catKey) {
-  const data = SENTENCE_DATA[catKey];
-  if (!data) return;
-  state.reorderSentences = shuffle(data.reorder);
-  state.reorderIndex = 0; state.reorderScore = 0;
-  document.querySelector(".app-header h1").textContent = `${WORD_DATA[catKey].name} - ならべかえ`;
-  showScreen("reorder-mode"); renderReorderQuestion();
+// ===== REORDER MODE =====
+function startReorderMode(ck) {
+  const d = SENTENCE_DATA[ck]; if (!d) return;
+  state.reorderSentences = shuffle(d.reorder); state.reorderIndex = 0; state.reorderScore = 0;
+  document.querySelector(".app-header h1").textContent = `${WORD_DATA[ck].name} - ならべかえ`;
+  showScreen("reorder-mode"); renderReorderQ();
 }
 
-function renderReorderQuestion() {
-  const area = document.getElementById("reorder-mode");
-  const item = state.reorderSentences[state.reorderIndex];
-  const total = state.reorderSentences.length;
-  const pct = (state.reorderIndex / total) * 100;
-  state.reorderPlaced = [];
-  state.reorderBank = shuffle([...item.parts]);
-
-  area.innerHTML = `<div class="reorder-area">
-    <div class="quiz-progress"><span>${state.reorderIndex + 1} / ${total}</span><div class="quiz-progress-bar"><div class="quiz-progress-fill" style="width:${pct}%"></div></div><span>⭕ ${state.reorderScore}</span></div>
+function renderReorderQ() {
+  const a = document.getElementById("reorder-mode"), item = state.reorderSentences[state.reorderIndex], t = state.reorderSentences.length, pct = (state.reorderIndex / t) * 100;
+  state.reorderPlaced = []; state.reorderBank = shuffle([...item.parts]);
+  a.innerHTML = `<div class="reorder-area"><div class="quiz-progress"><span>${state.reorderIndex + 1} / ${t}</span><div class="quiz-progress-bar"><div class="quiz-progress-fill" style="width:${pct}%"></div></div><span>⭕ ${state.reorderScore}</span></div>
     <div class="reorder-instruction">ことばを正しい順番にタップしてならべよう！</div>
     <div class="reorder-answer-zone" id="answer-zone"><span class="placeholder-text">ここに文ができるよ</span></div>
     <div class="reorder-word-bank" id="word-bank"></div>
     <button class="reorder-check-btn" id="reorder-check" disabled>チェック ✓</button></div>`;
-
-  renderWordBank();
-  document.getElementById("reorder-check").addEventListener("click", checkReorder);
+  renderBank();
+  document.getElementById("reorder-check").addEventListener("click", chkReorder);
 }
 
-function renderWordBank() {
-  const bankEl = document.getElementById("word-bank");
-  const zoneEl = document.getElementById("answer-zone");
-  const checkBtn = document.getElementById("reorder-check");
-
-  // Render bank
-  bankEl.innerHTML = state.reorderBank.map((w, i) => {
-    const placed = state.reorderPlaced.includes(i);
-    return `<div class="reorder-word${placed ? " placed" : ""}" data-idx="${i}" data-src="bank">${w}</div>`;
-  }).join("");
-
-  // Render answer zone
-  if (state.reorderPlaced.length === 0) {
-    zoneEl.innerHTML = '<span class="placeholder-text">ここに文ができるよ</span>';
-    zoneEl.classList.remove("has-words");
-  } else {
-    zoneEl.innerHTML = state.reorderPlaced.map(idx => `<div class="reorder-word in-answer" data-idx="${idx}" data-src="answer">${state.reorderBank[idx]}</div>`).join("");
-    zoneEl.classList.add("has-words");
-  }
-
-  checkBtn.disabled = state.reorderPlaced.length !== state.reorderBank.length;
-
-  // Events: bank words
-  bankEl.querySelectorAll(".reorder-word:not(.placed)").forEach(el => {
-    el.addEventListener("click", () => {
-      playSound("place");
-      state.reorderPlaced.push(parseInt(el.dataset.idx));
-      renderWordBank();
-    });
-  });
-
-  // Events: answer words (tap to remove)
-  zoneEl.querySelectorAll(".reorder-word.in-answer").forEach(el => {
-    el.addEventListener("click", () => {
-      playSound("click");
-      const idx = parseInt(el.dataset.idx);
-      state.reorderPlaced = state.reorderPlaced.filter(i => i !== idx);
-      renderWordBank();
-    });
-  });
+function renderBank() {
+  const bk = document.getElementById("word-bank"), az = document.getElementById("answer-zone"), cb = document.getElementById("reorder-check");
+  bk.innerHTML = state.reorderBank.map((w, i) => `<div class="reorder-word${state.reorderPlaced.includes(i) ? " placed" : ""}" data-idx="${i}">${w}</div>`).join("");
+  if (state.reorderPlaced.length === 0) { az.innerHTML = '<span class="placeholder-text">ここに文ができるよ</span>'; az.classList.remove("has-words"); }
+  else { az.innerHTML = state.reorderPlaced.map(i => `<div class="reorder-word in-answer" data-idx="${i}">${state.reorderBank[i]}</div>`).join(""); az.classList.add("has-words"); }
+  cb.disabled = state.reorderPlaced.length !== state.reorderBank.length;
+  bk.querySelectorAll(".reorder-word:not(.placed)").forEach(el => el.addEventListener("click", () => { playSound("place"); state.reorderPlaced.push(parseInt(el.dataset.idx)); renderBank(); }));
+  az.querySelectorAll(".reorder-word.in-answer").forEach(el => el.addEventListener("click", () => { playSound("click"); state.reorderPlaced = state.reorderPlaced.filter(i => i !== parseInt(el.dataset.idx)); renderBank(); }));
 }
 
-function checkReorder() {
-  const item = state.reorderSentences[state.reorderIndex];
-  const userAnswer = state.reorderPlaced.map(i => state.reorderBank[i]).join(" ");
-  const isCorrect = userAnswer === item.answer;
+function chkReorder() {
+  const item = state.reorderSentences[state.reorderIndex], ans = state.reorderPlaced.map(i => state.reorderBank[i]).join(" "), ok = ans === item.answer;
+  if (ok) { state.reorderScore++; playSound("correct"); speakSentence(item.answer); showFeedback(true); setTimeout(() => advReorder(), 1200); }
+  else { playSound("wrong"); setTimeout(() => showWrongPopupSentence(item.answer, ans, () => advReorder()), 400); }
+}
+function advReorder() { state.reorderIndex++; if (state.reorderIndex < state.reorderSentences.length) renderReorderQ(); else showResult("reorder"); }
 
-  if (isCorrect) {
-    state.reorderScore++; playSound("correct"); speakSentence(item.answer); showFeedback(true);
-    setTimeout(() => advanceReorder(), 1200);
-  } else {
-    playSound("wrong");
-    setTimeout(() => showWrongPopupSentence(item.answer, userAnswer, () => advanceReorder()), 400);
-  }
+// ===== CHOOSE SENTENCE MODE =====
+function startChooseSentenceMode(ck) {
+  const d = SENTENCE_DATA[ck]; if (!d) return;
+  state.csSentences = shuffle(d.choose); state.csIndex = 0; state.csScore = 0;
+  document.querySelector(".app-header h1").textContent = `${WORD_DATA[ck].name} - 絵から文`;
+  showScreen("choose-sentence-mode"); renderCSQ();
 }
 
-function advanceReorder() { state.reorderIndex++; if (state.reorderIndex < state.reorderSentences.length) renderReorderQuestion(); else showResult("reorder"); }
+function renderCSQ() {
+  const a = document.getElementById("choose-sentence-mode"), item = state.csSentences[state.csIndex], t = state.csSentences.length, pct = (state.csIndex / t) * 100;
+  const ch = shuffle([item.correct, ...item.wrongs]);
+  a.innerHTML = `<div class="choose-sentence-area"><div class="quiz-progress"><span>${state.csIndex + 1} / ${t}</span><div class="quiz-progress-bar"><div class="quiz-progress-fill" style="width:${pct}%"></div></div><span>⭕ ${state.csScore}</span></div>
+    <span class="cs-emoji">${item.emoji}</span><div class="cs-japanese">${item.ja}</div>
+    <div class="cs-choices">${ch.map(c => `<button class="cs-choice" data-text="${c}">${c}</button>`).join("")}</div></div>`;
+  a.querySelectorAll(".cs-choice").forEach(b => b.addEventListener("click", () => {
+    const chosen = b.dataset.text, ok = chosen === item.correct;
+    a.querySelectorAll(".cs-choice").forEach(x => { x.style.pointerEvents = "none"; if (x.dataset.text === item.correct) x.classList.add("correct"); else if (x === b && !ok) x.classList.add("wrong"); });
+    if (ok) { state.csScore++; playSound("correct"); speakSentence(item.correct); showFeedback(true); setTimeout(() => advCS(), 1200); }
+    else { playSound("wrong"); setTimeout(() => showWrongPopupSentence(item.correct, chosen, () => advCS()), 400); }
+  }));
+}
+function advCS() { state.csIndex++; if (state.csIndex < state.csSentences.length) renderCSQ(); else showResult("choose-sentence"); }
 
-// ===== CHOOSE SENTENCE MODE (絵から文を選ぶ) =====
-function startChooseSentenceMode(catKey) {
-  const data = SENTENCE_DATA[catKey];
-  if (!data) return;
-  state.csSentences = shuffle(data.choose);
-  state.csIndex = 0; state.csScore = 0;
-  document.querySelector(".app-header h1").textContent = `${WORD_DATA[catKey].name} - 絵から文`;
-  showScreen("choose-sentence-mode"); renderCSQuestion();
+// ===== FILL BLANK MODE =====
+function startFillBlankMode(ck) {
+  const d = SENTENCE_DATA[ck]; if (!d) return;
+  state.fbSentences = shuffle(d.fillblank); state.fbIndex = 0; state.fbScore = 0;
+  document.querySelector(".app-header h1").textContent = `${WORD_DATA[ck].name} - 穴うめ`;
+  showScreen("fillblank-mode"); renderFBQ();
 }
 
-function renderCSQuestion() {
-  const area = document.getElementById("choose-sentence-mode");
-  const item = state.csSentences[state.csIndex];
-  const total = state.csSentences.length;
-  const pct = (state.csIndex / total) * 100;
-  const choices = shuffle([item.correct, ...item.wrongs]);
-
-  area.innerHTML = `<div class="choose-sentence-area">
-    <div class="quiz-progress"><span>${state.csIndex + 1} / ${total}</span><div class="quiz-progress-bar"><div class="quiz-progress-fill" style="width:${pct}%"></div></div><span>⭕ ${state.csScore}</span></div>
-    <span class="cs-emoji">${item.emoji}</span>
-    <div class="cs-japanese">${item.ja}</div>
-    <div class="cs-choices">${choices.map(c => `<button class="cs-choice" data-text="${c}">${c}</button>`).join("")}</div></div>`;
-
-  area.querySelectorAll(".cs-choice").forEach(btn => {
-    btn.addEventListener("click", () => {
-      const chosen = btn.dataset.text;
-      const isCorrect = chosen === item.correct;
-      area.querySelectorAll(".cs-choice").forEach(b => {
-        b.style.pointerEvents = "none";
-        if (b.dataset.text === item.correct) b.classList.add("correct");
-        else if (b === btn && !isCorrect) b.classList.add("wrong");
-      });
-      if (isCorrect) { state.csScore++; playSound("correct"); speakSentence(item.correct); showFeedback(true); setTimeout(() => advanceCS(), 1200); }
-      else { playSound("wrong"); setTimeout(() => showWrongPopupSentence(item.correct, chosen, () => advanceCS()), 400); }
-    });
-  });
+function renderFBQ() {
+  const a = document.getElementById("fillblank-mode"), item = state.fbSentences[state.fbIndex], t = state.fbSentences.length, pct = (state.fbIndex / t) * 100;
+  const ch = shuffle([...item.choices]), sh = item.sentence.replace("___", '<span class="fb-blank" id="fb-blank">___</span>');
+  a.innerHTML = `<div class="fillblank-area"><div class="quiz-progress"><span>${state.fbIndex + 1} / ${t}</span><div class="quiz-progress-bar"><div class="quiz-progress-fill" style="width:${pct}%"></div></div><span>⭕ ${state.fbScore}</span></div>
+    <div class="fb-sentence">${sh}</div><div class="fb-choices">${ch.map(c => `<button class="fb-choice" data-word="${c}">${c}</button>`).join("")}</div></div>`;
+  a.querySelectorAll(".fb-choice").forEach(b => b.addEventListener("click", () => {
+    const chosen = b.dataset.word, ok = chosen === item.answer, bl = document.getElementById("fb-blank");
+    bl.textContent = chosen; bl.classList.add("filled");
+    a.querySelectorAll(".fb-choice").forEach(x => { x.style.pointerEvents = "none"; if (x.dataset.word === item.answer) x.classList.add("correct"); else if (x === b && !ok) x.classList.add("wrong"); });
+    if (ok) { bl.classList.add("correct-fill"); state.fbScore++; playSound("correct"); speakSentence(item.sentence.replace("___", item.answer)); showFeedback(true); setTimeout(() => advFB(), 1200); }
+    else { bl.classList.add("wrong-fill"); playSound("wrong"); setTimeout(() => showWrongPopupSentence(item.sentence.replace("___", item.answer), item.sentence.replace("___", chosen), () => advFB()), 400); }
+  }));
 }
+function advFB() { state.fbIndex++; if (state.fbIndex < state.fbSentences.length) renderFBQ(); else showResult("fillblank"); }
 
-function advanceCS() { state.csIndex++; if (state.csIndex < state.csSentences.length) renderCSQuestion(); else showResult("choose-sentence"); }
-
-// ===== FILL BLANK MODE (穴埋め) =====
-function startFillBlankMode(catKey) {
-  const data = SENTENCE_DATA[catKey];
-  if (!data) return;
-  state.fbSentences = shuffle(data.fillblank);
-  state.fbIndex = 0; state.fbScore = 0;
-  document.querySelector(".app-header h1").textContent = `${WORD_DATA[catKey].name} - 穴うめ`;
-  showScreen("fillblank-mode"); renderFBQuestion();
-}
-
-function renderFBQuestion() {
-  const area = document.getElementById("fillblank-mode");
-  const item = state.fbSentences[state.fbIndex];
-  const total = state.fbSentences.length;
-  const pct = (state.fbIndex / total) * 100;
-  const choices = shuffle([...item.choices]);
-  const sentenceHtml = item.sentence.replace("___", '<span class="fb-blank" id="fb-blank">___</span>');
-
-  area.innerHTML = `<div class="fillblank-area">
-    <div class="quiz-progress"><span>${state.fbIndex + 1} / ${total}</span><div class="quiz-progress-bar"><div class="quiz-progress-fill" style="width:${pct}%"></div></div><span>⭕ ${state.fbScore}</span></div>
-    <div class="fb-sentence">${sentenceHtml}</div>
-    <div class="fb-choices">${choices.map(c => `<button class="fb-choice" data-word="${c}">${c}</button>`).join("")}</div></div>`;
-
-  area.querySelectorAll(".fb-choice").forEach(btn => {
-    btn.addEventListener("click", () => {
-      const chosen = btn.dataset.word;
-      const isCorrect = chosen === item.answer;
-      const blank = document.getElementById("fb-blank");
-      blank.textContent = chosen;
-      blank.classList.add("filled");
-      area.querySelectorAll(".fb-choice").forEach(b => {
-        b.style.pointerEvents = "none";
-        if (b.dataset.word === item.answer) b.classList.add("correct");
-        else if (b === btn && !isCorrect) b.classList.add("wrong");
-      });
-      if (isCorrect) {
-        blank.classList.add("correct-fill");
-        state.fbScore++; playSound("correct");
-        const fullSentence = item.sentence.replace("___", item.answer);
-        speakSentence(fullSentence);
-        showFeedback(true); setTimeout(() => advanceFB(), 1200);
-      } else {
-        blank.classList.add("wrong-fill");
-        playSound("wrong");
-        const correctFull = item.sentence.replace("___", item.answer);
-        const wrongFull = item.sentence.replace("___", chosen);
-        setTimeout(() => showWrongPopupSentence(correctFull, wrongFull, () => advanceFB()), 400);
-      }
-    });
-  });
-}
-
-function advanceFB() { state.fbIndex++; if (state.fbIndex < state.fbSentences.length) renderFBQuestion(); else showResult("fillblank"); }
-
-// ===== RESULT SCREEN =====
+// ===== RESULT =====
 function showResult(mode) {
-  let score, total;
-  const catKey = state.currentCategory;
+  let score, total; const ck = state.currentCategory;
   if (mode === "choose") { score = state.quizScore; total = state.quizWords.length; }
   else if (mode === "match") { const p = state.matchTotal; score = Math.max(0, Math.round((p / Math.max(state.matchAttempts, p)) * p)); total = p; }
   else if (mode === "type") { score = state.typeScore; total = state.typeWords.length; }
   else if (mode === "reorder") { score = state.reorderScore; total = state.reorderSentences.length; }
   else if (mode === "choose-sentence") { score = state.csScore; total = state.csSentences.length; }
   else if (mode === "fillblank") { score = state.fbScore; total = state.fbSentences.length; }
-
   const pct = total > 0 ? Math.round((score / total) * 100) : 0;
-  saveProgress(catKey, mode, score, total);
-
+  saveProgress(ck, mode, score, total);
   let emoji, title;
   if (pct >= 90) { emoji = "🎉"; title = "すごい！かんぺき！"; }
   else if (pct >= 70) { emoji = "😄"; title = "よくできたね！"; }
   else if (pct >= 50) { emoji = "😊"; title = "がんばったね！"; }
   else { emoji = "💪"; title = "もういちどチャレンジ！"; }
-
   const stars = pct >= 90 ? 3 : pct >= 60 ? 2 : pct >= 30 ? 1 : 0;
   playSound("complete"); if (pct >= 70) showConfetti();
-
-  const area = document.getElementById("result");
-  area.innerHTML = `<div class="result-area">
-    <span class="result-emoji">${emoji}</span><div class="result-title">${title}</div>
-    <div class="result-score">${pct}%</div><div class="result-detail">${score} / ${total} もん正解</div>
-    <div class="result-stars">${renderStars(stars)}</div>
-    <div class="result-buttons">
-      <button class="result-btn primary" id="retry-btn">もういちど ↻</button>
-      <button class="result-btn secondary" id="mode-btn">モードをえらぶ</button>
-      <button class="result-btn secondary" id="home-btn">ホームにもどる</button></div></div>`;
+  const a = document.getElementById("result");
+  a.innerHTML = `<div class="result-area"><span class="result-emoji">${emoji}</span><div class="result-title">${title}</div>
+    <div class="result-score">${pct}%</div><div class="result-detail">${score} / ${total} もん正解</div><div class="result-stars">${renderStars(stars)}</div>
+    <div class="result-buttons"><button class="result-btn primary" id="retry-btn">もういちど ↻</button><button class="result-btn secondary" id="mode-btn">モードをえらぶ</button><button class="result-btn secondary" id="home-btn">ホームにもどる</button></div></div>`;
   showScreen("result");
-
-  document.getElementById("retry-btn").addEventListener("click", () => {
-    playSound("click");
-    if (mode === "choose") startChooseMode(catKey);
-    else if (mode === "match") startMatchMode(catKey);
-    else if (mode === "type") startTypeMode(catKey);
-    else if (mode === "reorder") startReorderMode(catKey);
-    else if (mode === "choose-sentence") startChooseSentenceMode(catKey);
-    else if (mode === "fillblank") startFillBlankMode(catKey);
+  document.getElementById("retry-btn").addEventListener("click", () => { playSound("click");
+    if (mode === "choose") startChooseMode(ck); else if (mode === "match") startMatchMode(ck); else if (mode === "type") startTypeMode(ck);
+    else if (mode === "reorder") startReorderMode(ck); else if (mode === "choose-sentence") startChooseSentenceMode(ck); else if (mode === "fillblank") startFillBlankMode(ck);
   });
-  document.getElementById("mode-btn").addEventListener("click", () => { playSound("click"); renderModeSelect(catKey); showScreen("mode-select"); });
+  document.getElementById("mode-btn").addEventListener("click", () => { playSound("click"); renderModeSelect(ck); showScreen("mode-select"); });
   document.getElementById("home-btn").addEventListener("click", () => { playSound("click"); renderHome(); showScreen("home"); });
 }
 
