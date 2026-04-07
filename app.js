@@ -65,36 +65,87 @@ function playSound(type) {
   } catch (e) {}
 }
 
-// === 発音: ローカルMP3ファイル（メイン） + SpeechSynthesis（フォールバック） ===
+// === 発音: SpeechSynthesis優先 → ダメならローカルMP3に自動切替 ===
+// speechWorks: null=未判定, true=使える(iPhone/PC), false=使えない(Fireタブレット)
+let speechWorks = null;
+
 function speak(text) {
   if (!state.soundEnabled) return;
-  const key = text.toLowerCase();
-  const file = (typeof AUDIO_MAP !== "undefined") ? AUDIO_MAP[key] : null;
 
-  if (file) {
-    // ローカルMP3ファイルで再生（操作音と同じ仕組み = Fireタブレット対応）
-    try {
-      const a = new Audio(file);
-      a.volume = 1.0;
-      const p = a.play();
-      if (p && p.catch) p.catch(() => {
-        // MP3再生失敗 → SpeechSynthesisフォールバック
-        speakBrowser(text);
-      });
-    } catch (e) { speakBrowser(text); }
-  } else {
-    // マッピングにない場合 → SpeechSynthesis
+  // 既にSpeechSynthesisが使えないと判明 → ローカルMP3
+  if (speechWorks === false) {
+    speakLocal(text);
+    return;
+  }
+
+  // SpeechSynthesisが使えると判明 → SpeechSynthesis
+  if (speechWorks === true) {
     speakBrowser(text);
+    return;
+  }
+
+  // まだ未判定 → SpeechSynthesisを試して判定
+  if (!("speechSynthesis" in window)) {
+    speechWorks = false;
+    speakLocal(text);
+    return;
+  }
+
+  try {
+    speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = "en-US";
+    u.rate = 0.8;
+
+    let resolved = false;
+
+    // 発話が始まったら → SpeechSynthesis使える！
+    u.onstart = () => {
+      if (!resolved) { resolved = true; speechWorks = true; }
+    };
+    u.onend = () => {
+      if (!resolved) { resolved = true; speechWorks = true; }
+    };
+    u.onerror = () => {
+      if (!resolved) { resolved = true; speechWorks = false; speakLocal(text); }
+    };
+
+    speechSynthesis.speak(u);
+
+    // 500ms経っても始まらなかったら → 使えないと判定してMP3へ
+    setTimeout(() => {
+      if (!resolved) {
+        resolved = true;
+        speechWorks = false;
+        speechSynthesis.cancel();
+        speakLocal(text);
+      }
+    }, 500);
+  } catch (e) {
+    speechWorks = false;
+    speakLocal(text);
   }
 }
 
 function speakBrowser(text) {
-  if (!("speechSynthesis" in window)) return;
+  if (!("speechSynthesis" in window)) { speakLocal(text); return; }
   try {
     speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(text);
     u.lang = "en-US"; u.rate = 0.8;
     speechSynthesis.speak(u);
+  } catch (e) { speakLocal(text); }
+}
+
+function speakLocal(text) {
+  const key = text.toLowerCase();
+  const file = (typeof AUDIO_MAP !== "undefined") ? AUDIO_MAP[key] : null;
+  if (!file) return;
+  try {
+    const a = new Audio(file);
+    a.volume = 1.0;
+    const p = a.play();
+    if (p && p.catch) p.catch(() => {});
   } catch (e) {}
 }
 
