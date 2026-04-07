@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>English Words 5 - えいたん5</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='80' font-size='80'>📚</text></svg>">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#FF6B35">
+</head>
+<body>
+
+  <!-- Header -->
+  <header class="app-header">
+    <button class="back-btn" aria-label="もどる">←</button>
+    <h1>English Words 5</h1>
+    <div class="header-right">
+      <button class="sound-toggle" aria-label="おと">🔊</button>
+    </div>
+  </header>
+
+  <!-- Home Screen -->
+  <div class="screen active" id="home">
+    <div class="home-title">カテゴリをえらぼう！</div>
+    <div class="home-subtitle">タップしてはじめよう</div>
+    <div class="category-grid" id="category-grid"></div>
+  </div>
+
+  <!-- Mode Select -->
+  <div class="screen" id="mode-select"></div>
+
+  <!-- Choose Mode -->
+  <div class="screen" id="choose-mode"></div>
+
+  <!-- Match Mode -->
+  <div class="screen" id="match-mode"></div>
+
+  <!-- Type Mode -->
+  <div class="screen" id="type-mode"></div>
+
+  <!-- Result -->
+  <div class="screen" id="result"></div>
+
+  <!-- Feedback Overlay -->
+  <div class="feedback-overlay" id="feedback-overlay">
+    <span class="feedback-text"></span>
+  </div>
+
+  <!-- Confetti -->
+  <div class="confetti-container" id="confetti-container"></div>
+
+  <script src="words.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
