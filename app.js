@@ -43,7 +43,42 @@ const state = {
 // ===== SOUND =====
 const AudioCtx = window.AudioContext || window.webkitAudioContext;
 let audioCtx;
-function getAudioCtx() { if (!audioCtx) audioCtx = new AudioCtx(); return audioCtx; }
+let audioUnlocked = false;
+
+function getAudioCtx() {
+  if (!audioCtx) audioCtx = new AudioCtx();
+  // Silkブラウザ等でsuspended状態なら resume
+  if (audioCtx.state === "suspended") {
+    audioCtx.resume();
+  }
+  return audioCtx;
+}
+
+// Fireタブレット(Silk)対策: 最初のタッチでAudioContextをアンロック
+function unlockAudio() {
+  if (audioUnlocked) return;
+  try {
+    const ctx = getAudioCtx();
+    // 無音を一瞬再生してアンロック
+    const buf = ctx.createBuffer(1, 1, 22050);
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.connect(ctx.destination);
+    src.start(0);
+    audioUnlocked = true;
+  } catch (e) {}
+  // SpeechSynthesisもアンロック（空発話）
+  if ("speechSynthesis" in window) {
+    const u = new SpeechSynthesisUtterance("");
+    u.volume = 0;
+    speechSynthesis.speak(u);
+  }
+}
+
+// 複数イベントでアンロック（タッチ・クリック両方対応）
+["touchstart", "touchend", "click"].forEach(evt => {
+  document.addEventListener(evt, unlockAudio, { once: false, passive: true });
+});
 
 function playSound(type) {
   if (!state.soundEnabled) return;
@@ -112,17 +147,32 @@ function playSound(type) {
 }
 
 function speakWord(word) {
-  if ("speechSynthesis" in window) {
-    const u = new SpeechSynthesisUtterance(word); u.lang = "en-US"; u.rate = 0.8;
-    speechSynthesis.cancel(); speechSynthesis.speak(u);
-  }
+  if (!("speechSynthesis" in window)) return;
+  try {
+    speechSynthesis.cancel();
+    // Fireタブレット対策: 少し遅延させて発話
+    setTimeout(() => {
+      const u = new SpeechSynthesisUtterance(word);
+      u.lang = "en-US";
+      u.rate = 0.8;
+      u.volume = 1;
+      speechSynthesis.speak(u);
+    }, 50);
+  } catch (e) {}
 }
 
 function speakSentence(text) {
-  if ("speechSynthesis" in window) {
-    const u = new SpeechSynthesisUtterance(text); u.lang = "en-US"; u.rate = 0.75;
-    speechSynthesis.cancel(); speechSynthesis.speak(u);
-  }
+  if (!("speechSynthesis" in window)) return;
+  try {
+    speechSynthesis.cancel();
+    setTimeout(() => {
+      const u = new SpeechSynthesisUtterance(text);
+      u.lang = "en-US";
+      u.rate = 0.75;
+      u.volume = 1;
+      speechSynthesis.speak(u);
+    }, 50);
+  } catch (e) {}
 }
 
 // ===== NAVIGATION =====
