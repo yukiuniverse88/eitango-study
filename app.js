@@ -65,45 +65,120 @@ function playSound(type) {
   } catch (e) {}
 }
 
-// === 発音: Google翻訳TTS（メイン） + SpeechSynthesis（フォールバック） ===
-function speakWithGoogle(text) {
+// === 発音システム: 複数方式を順番に試す ===
+// 方式1: SpeechSynthesis（ちゃんとvoice初期化する）
+// 方式2: Google翻訳TTS（DOM audio要素で再生）
+// 方式3: 代替TTS URL
+
+// --- SpeechSynthesis 初期化 ---
+let speechReady = false;
+let speechVoices = [];
+
+function initSpeech() {
+  if (!("speechSynthesis" in window)) return;
+  function loadVoices() {
+    speechVoices = speechSynthesis.getVoices();
+    if (speechVoices.length > 0) speechReady = true;
+  }
+  loadVoices();
+  if (speechSynthesis.addEventListener) {
+    speechSynthesis.addEventListener("voiceschanged", loadVoices);
+  }
+  // Silk対策: 定期的にチェック
+  setTimeout(loadVoices, 500);
+  setTimeout(loadVoices, 1500);
+  setTimeout(loadVoices, 3000);
+}
+initSpeech();
+
+function getEnglishVoice() {
+  if (speechVoices.length === 0) speechVoices = speechSynthesis.getVoices();
+  // 英語の音声を探す
+  const en = speechVoices.find(v => v.lang.startsWith("en"));
+  return en || null;
+}
+
+// --- DOM Audio要素（永続化して再利用） ---
+const ttsAudio = document.createElement("audio");
+ttsAudio.setAttribute("playsinline", "");
+ttsAudio.preload = "auto";
+document.body.appendChild(ttsAudio);
+
+// --- 発音実行 ---
+function speak(text) {
+  if (!state.soundEnabled) return;
+
+  // 方式1: SpeechSynthesis
+  if (speechReady && "speechSynthesis" in window) {
+    try {
+      speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(text);
+      u.lang = "en-US";
+      u.rate = 0.8;
+      const voice = getEnglishVoice();
+      if (voice) u.voice = voice;
+      speechSynthesis.speak(u);
+      // 発話が始まったか確認（200ms後にチェック）
+      setTimeout(() => {
+        if (!speechSynthesis.speaking && !speechSynthesis.pending) {
+          // SpeechSynthesisが動いてない → 方式2へ
+          tryGoogleTTS(text);
+        }
+      }, 200);
+      return;
+    } catch (e) {}
+  }
+
+  // 方式1が使えない場合 → 方式2
+  tryGoogleTTS(text);
+}
+
+function tryGoogleTTS(text) {
   try {
+    // Google翻訳TTS (DOM audio要素で再生)
     const url = "https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=en&q=" + encodeURIComponent(text);
-    const a = new Audio(url);
-    a.volume = 1.0;
-    const p = a.play();
+    ttsAudio.src = url;
+    ttsAudio.load();
+    const p = ttsAudio.play();
     if (p && p.then) {
-      p.then(() => {}).catch(() => {
-        // Google TTS失敗 → SpeechSynthesis にフォールバック
-        speakWithBrowser(text, 0.8);
+      p.catch(() => {
+        // 方式2失敗 → 方式3: 別のURLパターン
+        tryAltTTS(text);
       });
     }
   } catch (e) {
-    speakWithBrowser(text, 0.8);
+    tryAltTTS(text);
   }
 }
 
-function speakWithBrowser(text, rate) {
-  if (!("speechSynthesis" in window)) return;
+function tryAltTTS(text) {
   try {
-    speechSynthesis.cancel();
-    setTimeout(() => {
-      const u = new SpeechSynthesisUtterance(text);
-      u.lang = "en-US";
-      u.rate = rate || 0.8;
-      speechSynthesis.speak(u);
-    }, 50);
+    // 別のGoogle TTSエンドポイント
+    const url2 = "https://translate.googleapis.com/translate_tts?ie=UTF-8&client=gtx&tl=en&q=" + encodeURIComponent(text);
+    const a = new Audio(url2);
+    a.volume = 1.0;
+    const p = a.play();
+    if (p && p.catch) p.catch(() => {});
   } catch (e) {}
 }
 
-function speakWord(word) { speakWithGoogle(word); }
-function speakSentence(text) { speakWithGoogle(text); }
+function speakWord(word) { speak(word); }
+function speakSentence(text) { speak(text); }
 
-// タッチでAudio解禁
+// タッチでAudio解禁 + SpeechSynthesis解禁
 let _aUnlock = false;
 function _unlock() {
   if (_aUnlock) return; _aUnlock = true;
+  // Blob Audio解禁
   try { const a = new Audio(SND.click); a.volume = 0.01; const p = a.play(); if (p && p.catch) p.catch(() => {}); } catch (e) {}
+  // DOM audio要素解禁
+  try { ttsAudio.src = SND.click; ttsAudio.volume = 0.01; ttsAudio.load(); const p = ttsAudio.play(); if (p && p.then) p.then(() => { ttsAudio.volume = 1.0; }).catch(() => {}); } catch (e) {}
+  // SpeechSynthesis解禁
+  if ("speechSynthesis" in window) {
+    try { const u = new SpeechSynthesisUtterance(""); u.volume = 0; speechSynthesis.speak(u); } catch (e) {}
+    // Voice再読み込み
+    setTimeout(() => { speechVoices = speechSynthesis.getVoices(); if (speechVoices.length > 0) speechReady = true; }, 100);
+  }
 }
 ["touchstart", "touchend", "click"].forEach(e => document.addEventListener(e, _unlock, { passive: true }));
 
