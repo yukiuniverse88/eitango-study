@@ -787,6 +787,131 @@ body {
   100% { transform: scale(1) rotate(0); opacity: 1; }
 }
 
+/* ===== WRONG ANSWER POPUP ===== */
+.popup-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0,0,0,0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 250;
+  padding: 20px;
+  animation: popupFadeIn 0.25s ease;
+}
+
+@keyframes popupFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.popup-card {
+  background: var(--bg-card);
+  border-radius: var(--radius-xl);
+  padding: 28px 24px;
+  max-width: 360px;
+  width: 100%;
+  text-align: center;
+  box-shadow: var(--shadow-strong);
+  animation: popupSlideUp 0.3s ease;
+}
+
+@keyframes popupSlideUp {
+  from { transform: translateY(30px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+.popup-card .popup-label {
+  font-size: 13px;
+  color: var(--accent-4);
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+
+.popup-card .popup-emoji {
+  font-size: 48px;
+  display: block;
+  margin-bottom: 8px;
+}
+
+.popup-card .popup-wrong {
+  font-size: 16px;
+  color: var(--text-light);
+  margin-bottom: 4px;
+  text-decoration: line-through;
+}
+
+.popup-card .popup-correct-word {
+  font-family: 'Fredoka', sans-serif;
+  font-size: 40px;
+  font-weight: 700;
+  color: #28A745;
+  margin: 8px 0;
+  letter-spacing: 2px;
+}
+
+.popup-card .popup-ja {
+  font-size: 18px;
+  color: var(--text-main);
+  font-weight: 700;
+  margin-bottom: 16px;
+}
+
+.popup-card .popup-tip {
+  background: #FFF8E1;
+  border-radius: var(--radius-sm);
+  padding: 14px 16px;
+  margin-bottom: 20px;
+  text-align: left;
+}
+
+.popup-card .popup-tip-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: #F9A825;
+  margin-bottom: 6px;
+}
+
+.popup-card .popup-tip-text {
+  font-size: 14px;
+  color: var(--text-main);
+  line-height: 1.6;
+}
+
+.popup-card .popup-speak-btn {
+  background: var(--accent-2);
+  color: white;
+  border: none;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  font-size: 20px;
+  cursor: pointer;
+  margin-bottom: 16px;
+  box-shadow: 0 3px 10px rgba(78,205,196,0.3);
+}
+
+.popup-card .popup-close-btn {
+  background: var(--accent-1);
+  color: white;
+  border: none;
+  border-radius: var(--radius-md);
+  padding: 12px 40px;
+  font-family: 'M PLUS Rounded 1c', sans-serif;
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(255,107,53,0.3);
+  transition: transform 0.15s;
+}
+
+.popup-card .popup-close-btn:active {
+  transform: scale(0.96);
+}
+
 /* ===== CONFETTI ===== */
 .confetti-container {
   position: fixed;

@@ -21,7 +21,7 @@ const state = {
   typeInput: "",
   typeScore: 0,
   shiftActive: false,
-  hintShown: false,
+  hintLevel: 0, // 0=none, 1, 2, 3
   // Progress
   progress: JSON.parse(localStorage.getItem("eng5-progress") || "{}"),
 };
@@ -52,7 +52,6 @@ function playSound(type) {
       gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.3);
       osc.start(ctx.currentTime);
       osc.stop(ctx.currentTime + 0.3);
-      // Second tone
       const osc2 = ctx.createOscillator();
       const gain2 = ctx.createGain();
       osc2.connect(gain2);
@@ -120,9 +119,7 @@ function playSound(type) {
         o.stop(ctx.currentTime + i * 0.12 + 0.4);
       });
     }
-  } catch (e) {
-    // Audio not available
-  }
+  } catch (e) {}
 }
 
 function speakWord(word) {
@@ -181,7 +178,7 @@ function getCategoryStars(catKey) {
     }
   });
   if (modes === 0) return 0;
-  const avg = totalPct / 3; // average across all 3 modes
+  const avg = totalPct / 3;
   if (avg >= 90) return 3;
   if (avg >= 60) return 2;
   if (avg >= 30) return 1;
@@ -272,14 +269,47 @@ function shuffle(arr) {
   return a;
 }
 
-// ===== FEEDBACK =====
+// ===== FEEDBACK (正解のみ) =====
 function showFeedback(isCorrect) {
+  if (!isCorrect) return; // 不正解はポップアップで表示するのでここではスキップ
   const overlay = document.getElementById("feedback-overlay");
   const text = overlay.querySelector(".feedback-text");
-  text.textContent = isCorrect ? "⭕" : "❌";
-  text.className = "feedback-text " + (isCorrect ? "correct" : "wrong");
+  text.textContent = "⭕";
+  text.className = "feedback-text correct";
   overlay.classList.add("show");
   setTimeout(() => overlay.classList.remove("show"), 600);
+}
+
+// ===== WRONG ANSWER POPUP =====
+function showWrongPopup(word, chosenText, onClose) {
+  // Remove existing popup if any
+  const existing = document.querySelector(".popup-overlay");
+  if (existing) existing.remove();
+
+  const popup = document.createElement("div");
+  popup.className = "popup-overlay";
+  popup.innerHTML = `
+    <div class="popup-card">
+      <div class="popup-label">❌ ざんねん！</div>
+      <span class="popup-emoji">${word.emoji}</span>
+      <div class="popup-ja">${word.ja}</div>
+      ${chosenText ? `<div class="popup-wrong">${chosenText}</div>` : ""}
+      <div class="popup-correct-word">${word.en}</div>
+      <button class="popup-speak-btn" id="popup-speak">🔊</button>
+      <div class="popup-tip">
+        <div class="popup-tip-label">💡 こうやって覚えよう！</div>
+        <div class="popup-tip-text">${word.tip || ""}</div>
+      </div>
+      <button class="popup-close-btn" id="popup-close">とじる</button>
+    </div>
+  `;
+  document.body.appendChild(popup);
+
+  document.getElementById("popup-speak").addEventListener("click", () => speakWord(word.en));
+  document.getElementById("popup-close").addEventListener("click", () => {
+    popup.remove();
+    if (onClose) onClose();
+  });
 }
 
 // ===== CONFETTI =====
@@ -318,10 +348,13 @@ function renderQuizQuestion() {
   const total = state.quizWords.length;
   const progressPct = (state.quizIndex / total) * 100;
 
-  // Get 3 wrong choices from all categories
+  // 紛らわしい選択肢を作成
+  // confusablesから2つ + 他カテゴリの実在単語から1つ
+  const confusables = word.confusables ? shuffle(word.confusables).slice(0, 2) : [];
   const allWords = Object.values(WORD_DATA).flatMap((c) => c.words);
-  const wrongs = shuffle(allWords.filter((w) => w.en !== word.en)).slice(0, 3);
-  const choices = shuffle([word, ...wrongs]);
+  const realWrongs = shuffle(allWords.filter((w) => w.en !== word.en)).slice(0, 3 - confusables.length);
+  const wrongChoices = [...confusables.map(c => ({ en: c, fake: true })), ...realWrongs.map(w => ({ en: w.en, fake: false }))].slice(0, 3);
+  const choices = shuffle([{ en: word.en, fake: false }, ...wrongChoices]);
 
   area.innerHTML = `
     <div class="quiz-area">
@@ -345,45 +378,52 @@ function renderQuizQuestion() {
   document.getElementById("speak-btn").addEventListener("click", () => speakWord(word.en));
 
   area.querySelectorAll(".quiz-choice").forEach((btn) => {
-    btn.addEventListener("click", () => handleQuizAnswer(btn, word.en));
+    btn.addEventListener("click", () => handleQuizAnswer(btn, word));
   });
 }
 
-function handleQuizAnswer(btn, correct) {
+function handleQuizAnswer(btn, word) {
   const chosen = btn.dataset.word;
-  const isCorrect = chosen === correct;
+  const isCorrect = chosen === word.en;
   const allBtns = document.querySelectorAll(".quiz-choice");
 
   allBtns.forEach((b) => {
     b.style.pointerEvents = "none";
-    if (b.dataset.word === correct) b.classList.add("correct");
+    if (b.dataset.word === word.en) b.classList.add("correct");
     else if (b === btn && !isCorrect) b.classList.add("wrong");
   });
 
   if (isCorrect) {
     state.quizScore++;
     playSound("correct");
-    speakWord(correct);
+    speakWord(word.en);
+    showFeedback(true);
+    setTimeout(() => {
+      advanceQuiz();
+    }, 1200);
   } else {
     playSound("wrong");
+    // 不正解ポップアップを表示（閉じるボタンで次へ）
+    setTimeout(() => {
+      showWrongPopup(word, chosen, () => {
+        advanceQuiz();
+      });
+    }, 400);
   }
+}
 
-  showFeedback(isCorrect);
-
-  setTimeout(() => {
-    state.quizIndex++;
-    if (state.quizIndex < state.quizWords.length) {
-      renderQuizQuestion();
-    } else {
-      showResult("choose");
-    }
-  }, 1200);
+function advanceQuiz() {
+  state.quizIndex++;
+  if (state.quizIndex < state.quizWords.length) {
+    renderQuizQuestion();
+  } else {
+    showResult("choose");
+  }
 }
 
 // ===== MATCH MODE =====
 function startMatchMode(catKey) {
   const cat = WORD_DATA[catKey];
-  // Pick 6 words for 12 cards (3x4 grid)
   const selected = shuffle(cat.words).slice(0, 6);
   state.matchTotal = selected.length;
   state.matchMatched = 0;
@@ -391,7 +431,6 @@ function startMatchMode(catKey) {
   state.matchFlipped = [];
   state.matchLocked = false;
 
-  // Create card pairs
   const cards = [];
   selected.forEach((w, i) => {
     cards.push({ id: `en-${i}`, pairId: i, type: "en", text: w.en, emoji: w.emoji, word: w });
@@ -450,18 +489,15 @@ function handleMatchClick(cardEl) {
     const [a, b] = state.matchFlipped;
 
     if (a.dataset.pair === b.dataset.pair && a.dataset.type !== b.dataset.type) {
-      // Match!
       setTimeout(() => {
         a.classList.add("matched");
         b.classList.add("matched");
         state.matchMatched++;
         playSound("match");
 
-        // Speak the English word
         const word = state.matchCards.find((c) => c.id === a.dataset.id);
         if (word) speakWord(word.word.en);
 
-        // Update stats
         document.querySelector(".match-stats").innerHTML = `
           <span>ペア: ${state.matchMatched} / ${state.matchTotal}</span>
           <span>トライ: ${state.matchAttempts}</span>
@@ -475,7 +511,6 @@ function handleMatchClick(cardEl) {
         }
       }, 400);
     } else {
-      // No match
       setTimeout(() => {
         a.classList.remove("flipped", "en-card", "ja-card");
         b.classList.remove("flipped", "en-card", "ja-card");
@@ -494,10 +529,34 @@ function startTypeMode(catKey) {
   state.typeScore = 0;
   state.typeInput = "";
   state.shiftActive = false;
-  state.hintShown = false;
+  state.hintLevel = 0;
   document.querySelector(".app-header h1").textContent = `${cat.name} - タイピング`;
   showScreen("type-mode");
   renderTypeQuestion();
+}
+
+function getHintText(word, level) {
+  const en = word.en;
+  if (level === 1) {
+    // ヒント1: 最初の1文字 + 文字数
+    return `${en[0]} ${"_ ".repeat(en.length - 1).trim()}　（${en.length}文字）`;
+  } else if (level === 2) {
+    // ヒント2: 最初と最後の文字 + 文字数
+    if (en.length <= 2) return en;
+    return `${en[0]} ${"_ ".repeat(en.length - 2).trim()} ${en[en.length - 1]}　（${en.length}文字）`;
+  } else if (level === 3) {
+    // ヒント3: 半分くらい見せる
+    let hint = "";
+    for (let i = 0; i < en.length; i++) {
+      if (i === 0 || i === en.length - 1 || i % 2 === 0) {
+        hint += en[i] + " ";
+      } else {
+        hint += "_ ";
+      }
+    }
+    return hint.trim() + `　（${en.length}文字）`;
+  }
+  return "";
 }
 
 function renderTypeQuestion() {
@@ -506,7 +565,7 @@ function renderTypeQuestion() {
   const total = state.typeWords.length;
   const progressPct = (state.typeIndex / total) * 100;
   state.typeInput = "";
-  state.hintShown = false;
+  state.hintLevel = 0;
 
   area.innerHTML = `
     <div class="type-area">
@@ -521,8 +580,8 @@ function renderTypeQuestion() {
       <div class="type-japanese">${word.ja}</div>
       <button class="quiz-speaker-btn" id="speak-btn-type">🔊</button>
       <div class="type-input-display" id="type-display"><span class="type-cursor"></span></div>
-      <div class="type-hint-area">
-        <button class="type-hint-btn" id="hint-btn">ヒントを見る</button>
+      <div class="type-hint-area" id="hint-area">
+        <button class="type-hint-btn" id="hint-btn">ヒント① を見る</button>
       </div>
     </div>
     <div class="keyboard" id="keyboard"></div>
@@ -530,11 +589,22 @@ function renderTypeQuestion() {
 
   document.getElementById("speak-btn-type").addEventListener("click", () => speakWord(word.en));
   document.getElementById("hint-btn").addEventListener("click", () => {
-    state.hintShown = true;
-    const hintArea = document.querySelector(".type-hint-area");
-    // Show first letter and underscores
-    const hint = word.en[0] + " " + word.en.slice(1).replace(/./g, "_ ").trim();
-    hintArea.innerHTML = `<span class="type-hint-text">${hint}</span>`;
+    state.hintLevel++;
+    const hintArea = document.getElementById("hint-area");
+    const hintText = getHintText(word, state.hintLevel);
+
+    let nextBtnHtml = "";
+    if (state.hintLevel < 3) {
+      const nextLabel = state.hintLevel + 1;
+      nextBtnHtml = `<button class="type-hint-btn" id="hint-btn" style="margin-left:10px">ヒント${nextLabel === 2 ? "②" : "③"} を見る</button>`;
+    }
+
+    hintArea.innerHTML = `<span class="type-hint-text">${hintText}</span>${nextBtnHtml}`;
+
+    const nextBtn = document.getElementById("hint-btn");
+    if (nextBtn) {
+      nextBtn.addEventListener("click", arguments.callee);
+    }
   });
 
   renderKeyboard();
@@ -556,7 +626,7 @@ function renderKeyboard() {
     <div class="kb-row">
       ${row
         .map((key) => {
-          if (key === "SHIFT") return `<div class="kb-key shift wide" data-key="shift">⇧</div>`;
+          if (key === "SHIFT") return `<div class="kb-key shift wide${state.shiftActive ? " active" : ""}" data-key="shift">⇧</div>`;
           if (key === "⌫") return `<div class="kb-key backspace wide" data-key="backspace">⌫</div>`;
           if (key === "ENTER") return `<div class="kb-key enter extra-wide" data-key="enter">けってい ✓</div>`;
           const display = state.shiftActive ? key.toUpperCase() : key;
@@ -567,10 +637,6 @@ function renderKeyboard() {
   `
     )
     .join("");
-
-  // Update shift button state
-  const shiftBtn = kb.querySelector('[data-key="shift"]');
-  if (state.shiftActive) shiftBtn.classList.add("active");
 
   kb.querySelectorAll(".kb-key").forEach((key) => {
     key.addEventListener("click", () => handleKeyPress(key.dataset.key));
@@ -599,7 +665,6 @@ function handleKeyPress(key) {
     return;
   }
 
-  // Letter key
   const char = state.shiftActive ? key.toUpperCase() : key;
   state.typeInput += char;
   if (state.shiftActive) {
@@ -633,28 +698,32 @@ function checkTypeAnswer() {
     playSound("correct");
     speakWord(word.en);
     showFeedback(true);
+    setTimeout(() => advanceType(), 1200);
   } else {
     playSound("wrong");
-    showFeedback(false);
-    // Show correct answer briefly
-    const display = document.getElementById("type-display");
-    display.innerHTML = `<span style="color:#DC3545;text-decoration:line-through">${state.typeInput || "　"}</span>
-      <span style="margin-left:12px;color:#28A745">${word.en}</span>`;
+    // 不正解ポップアップを表示
+    setTimeout(() => {
+      showWrongPopup(word, state.typeInput || "(なにもうってない)", () => {
+        advanceType();
+      });
+    }, 300);
   }
+}
 
-  setTimeout(() => {
-    state.typeIndex++;
-    if (state.typeIndex < state.typeWords.length) {
-      renderTypeQuestion();
-    } else {
-      showResult("type");
-    }
-  }, 1500);
+function advanceType() {
+  state.typeIndex++;
+  if (state.typeIndex < state.typeWords.length) {
+    renderTypeQuestion();
+  } else {
+    showResult("type");
+  }
 }
 
 // Physical keyboard support
 document.addEventListener("keydown", (e) => {
   if (state.currentScreen !== "type-mode") return;
+  // ポップアップが開いている時はキー入力を無視
+  if (document.querySelector(".popup-overlay")) return;
   if (e.key === "Backspace") {
     e.preventDefault();
     handleKeyPress("backspace");
@@ -674,14 +743,13 @@ document.addEventListener("keydown", (e) => {
 
 // ===== RESULT SCREEN =====
 function showResult(mode) {
-  let score, total, pct;
+  let score, total;
   const catKey = state.currentCategory;
 
   if (mode === "choose") {
     score = state.quizScore;
     total = state.quizWords.length;
   } else if (mode === "match") {
-    // Score based on efficiency
     const perfect = state.matchTotal;
     const attempts = state.matchAttempts;
     score = Math.max(0, Math.round((perfect / Math.max(attempts, perfect)) * perfect));
@@ -691,7 +759,7 @@ function showResult(mode) {
     total = state.typeWords.length;
   }
 
-  pct = total > 0 ? Math.round((score / total) * 100) : 0;
+  const pct = total > 0 ? Math.round((score / total) * 100) : 0;
   saveProgress(catKey, mode, score, total);
 
   let emoji, title;
