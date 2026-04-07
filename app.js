@@ -65,22 +65,45 @@ function playSound(type) {
   } catch (e) {}
 }
 
-function speakWord(word) {
-  if (!("speechSynthesis" in window)) return;
-  try { speechSynthesis.cancel(); setTimeout(() => { const u = new SpeechSynthesisUtterance(word); u.lang = "en-US"; u.rate = 0.8; speechSynthesis.speak(u); }, 50); } catch (e) {}
+// === 発音: Google翻訳TTS（メイン） + SpeechSynthesis（フォールバック） ===
+function speakWithGoogle(text) {
+  try {
+    const url = "https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=en&q=" + encodeURIComponent(text);
+    const a = new Audio(url);
+    a.volume = 1.0;
+    const p = a.play();
+    if (p && p.then) {
+      p.then(() => {}).catch(() => {
+        // Google TTS失敗 → SpeechSynthesis にフォールバック
+        speakWithBrowser(text, 0.8);
+      });
+    }
+  } catch (e) {
+    speakWithBrowser(text, 0.8);
+  }
 }
 
-function speakSentence(text) {
+function speakWithBrowser(text, rate) {
   if (!("speechSynthesis" in window)) return;
-  try { speechSynthesis.cancel(); setTimeout(() => { const u = new SpeechSynthesisUtterance(text); u.lang = "en-US"; u.rate = 0.75; speechSynthesis.speak(u); }, 50); } catch (e) {}
+  try {
+    speechSynthesis.cancel();
+    setTimeout(() => {
+      const u = new SpeechSynthesisUtterance(text);
+      u.lang = "en-US";
+      u.rate = rate || 0.8;
+      speechSynthesis.speak(u);
+    }, 50);
+  } catch (e) {}
 }
+
+function speakWord(word) { speakWithGoogle(word); }
+function speakSentence(text) { speakWithGoogle(text); }
 
 // タッチでAudio解禁
 let _aUnlock = false;
 function _unlock() {
   if (_aUnlock) return; _aUnlock = true;
   try { const a = new Audio(SND.click); a.volume = 0.01; const p = a.play(); if (p && p.catch) p.catch(() => {}); } catch (e) {}
-  if ("speechSynthesis" in window) { const u = new SpeechSynthesisUtterance(""); u.volume = 0; speechSynthesis.speak(u); }
 }
 ["touchstart", "touchend", "click"].forEach(e => document.addEventListener(e, _unlock, { passive: true }));
 
